@@ -1,0 +1,28 @@
+crowd_project/
+├── config.py               # All parameters, thresholds, weights, paths
+├── model_registry.py        # Lazy-load & cache Detectron2 models by key
+├── detection_engine.py      # Faster R-CNN person detection -> bbox, confidence, area, centroid
+├── pose_engine.py           # Keypoint R-CNN -> 17 keypoints per person
+├── tracker.py               # IoU + Hungarian matching -> persistent track_id per person
+├── density_analyzer.py      # density_ratio + dynamic Low/Moderate/High classification
+├── motion_analyzer.py       # Keypoint displacement normalized by torso length
+├── agitation_analyzer.py    # Weighted agitation index (motion + variance + direction + density)
+├── event_manager.py         # Escalation event detection + events.json + highlighted frames
+├── database.py              # SQLite storage (frames + persons tables)
+├── analytics.py             # Summary, JSON persistence, trend plots
+├── heatmap.py               # Gaussian density heatmap overlays (retained)
+├── video_utils.py           # Image loading, video frame extraction (retained)
+├── main.py                  # Orchestrator: 3-pass pipeline + console report
+├── requirements.txt
+├── input/images/
+├── input/video/
+└── output/
+    ├── annotated/
+    ├── heatmaps/
+    ├── escalation_frames/
+    ├── metrics.json
+    ├── summary.json
+    ├── events.json
+    ├── crowd_analysis.db
+    ├── crowd_density_trend.png
+    └── agitation_index_trend.png

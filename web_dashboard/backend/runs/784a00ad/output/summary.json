@@ -1,0 +1,18 @@
+{
+  "total_frames": 1,
+  "mean_density": 1.485143,
+  "peak_density_frame": "istockphoto-1480574526-612x612.jpg",
+  "peak_density_value": 1.485143,
+  "mean_agitation": 0.148514,
+  "highest_agitation_frame": "istockphoto-1480574526-612x612.jpg",
+  "highest_agitation_value": 0.148514,
+  "total_escalation_events": 0,
+  "crowd_classification_distribution": {
+    "Moderate Crowd": 1
+  },
+  "average_crowd_count": 18.0,
+  "std_crowd_count": 0.0,
+  "density_moving_average": [
+    1.4851
+  ]
+}

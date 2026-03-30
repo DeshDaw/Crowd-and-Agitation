@@ -1,0 +1,13 @@
+[
+  {
+    "frame_name": "istockphoto-1480574526-612x612.jpg",
+    "frame_index": 0,
+    "people_count": 18,
+    "inference_time_det": 2.6284,
+    "inference_time_pose": 3.4058,
+    "average_confidence": 0.9056,
+    "density_ratio": 1.485142749990238,
+    "agitation_index": 0.1485142749990238,
+    "classification": "Moderate Crowd"
+  }
+]

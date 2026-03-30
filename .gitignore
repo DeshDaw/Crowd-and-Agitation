@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+crowd_env/
+venv*/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Node / Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+.npm
+.nvmrc
+.env
+.env.*
+!.env.example
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Project specific
+temp/
+crowd_project/output/
+web_dashboard/backend/runs/
+web_dashboard/backend/crowd_analysis.db

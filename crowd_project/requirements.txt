@@ -1,0 +1,15 @@
+# Crowd Detection & Density Estimation System
+# Python 3.10 · Windows 11
+# Detectron2 must be built from source (see README.md)
+
+torch==2.1.2
+torchvision==0.16.2
+
+# pip install "git+https://github.com/facebookresearch/detectron2.git"
+
+numpy==1.26.4
+opencv-python==4.8.1.78
+
+matplotlib>=3.7.0
+tqdm>=4.65.0
+scipy>=1.10.0
