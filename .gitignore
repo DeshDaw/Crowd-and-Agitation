@@ -39,3 +39,14 @@ temp/
 crowd_project/output/
 web_dashboard/backend/runs/
 web_dashboard/backend/crowd_analysis.db
+
+# Vendored / generated
+detectron2/
+prompt.txt
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.db
+*.sqlite
+*.sqlite3

@@ -5,7 +5,8 @@
 torch==2.1.2
 torchvision==0.16.2
 
-# pip install "git+https://github.com/facebookresearch/detectron2.git"
+# Pinned to the revision vendored on the dev machine:
+# pip install "git+https://github.com/facebookresearch/detectron2.git@fd27788"
 
 numpy==1.26.4
 opencv-python==4.8.1.78
