@@ -30,45 +30,53 @@ export const RunResults = () => {
   const [eventFrameNames, setEventFrameNames] = useState<Set<string>>(new Set());
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
+  const [resultErrors, setResultErrors] = useState<string[]>([]);
 
   // Load data
   useEffect(() => {
     if (!runId) return;
-    fetchStatus(runId);
+    fetchStatus(runId).catch(() => {});
   }, [runId, fetchStatus]);
 
-  // Poll for updates while processing
+  // Poll for updates while the run is anywhere in its active lifecycle —
+  // a queued or just-created run also needs the page to keep up to date
+  const isActive = ['created', 'uploading', 'queued', 'processing'].includes(
+    status?.state ?? ''
+  );
   useEffect(() => {
-    if (!runId || !isProcessing) return;
+    if (!runId || !isActive) return;
 
-    const interval = setInterval(async () => {
-      await fetchStatus(runId);
+    const interval = setInterval(() => {
+      fetchStatus(runId).catch(() => {});
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [runId, isProcessing, fetchStatus]);
+  }, [runId, isActive, fetchStatus]);
 
-  // Load results when completed
+  // Load results when completed. allSettled: one missing artifact (e.g.
+  // plots disabled) must not blank every other section.
   useEffect(() => {
-    if (!runId || !status?.state) return;
-    if (status.state !== 'completed') return;
+    if (!runId || status?.state !== 'completed') return;
 
     const loadResults = async () => {
-      try {
-        const [s, m, e, a] = await Promise.all([
-          runsApi.getSummary(runId),
-          runsApi.getMetrics(runId),
-          runsApi.getEvents(runId),
-          runsApi.listAnnotated(runId),
-        ]);
-        setSummary(s);
-        setMetrics(m);
-        setEvents(e.events);
-        setAnnotatedFrames(a);
-        setEventFrameNames(new Set(e.events.map((ev) => ev.frame_name)));
-      } catch (err) {
-        console.error('Failed to load results:', err);
-      }
+      const [s, m, e, a] = await Promise.allSettled([
+        runsApi.getSummary(runId),
+        runsApi.getMetrics(runId),
+        runsApi.getEvents(runId),
+        runsApi.listAnnotated(runId),
+      ]);
+      const errors: string[] = [];
+      if (s.status === 'fulfilled') setSummary(s.value);
+      else errors.push('summary');
+      if (m.status === 'fulfilled') setMetrics(m.value);
+      else errors.push('metrics');
+      if (e.status === 'fulfilled') {
+        setEvents(e.value.events);
+        setEventFrameNames(new Set(e.value.events.map((ev) => ev.frame_name)));
+      } else errors.push('events');
+      if (a.status === 'fulfilled') setAnnotatedFrames(a.value);
+      else errors.push('annotated frames');
+      setResultErrors(errors);
     };
 
     loadResults();
@@ -77,6 +85,7 @@ export const RunResults = () => {
   const handleCancel = async () => {
     if (!runId) return;
     await cancelRun(runId);
+    await fetchStatus(runId).catch(() => {});
   };
 
   const openViewer = (index: number) => {
@@ -131,6 +140,11 @@ export const RunResults = () => {
           {/* Results */}
           {isComplete && (
             <>
+              {resultErrors.length > 0 && (
+                <div className="p-4 bg-amber-50 text-amber-800 rounded-lg text-sm">
+                  Some results could not be loaded: {resultErrors.join(', ')}.
+                </div>
+              )}
               <SummaryCards summary={summary} />
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -157,6 +171,12 @@ export const RunResults = () => {
                   </div>
                 </CardHeader>
                 <CardContent>
+                  {annotatedFrames.length === 0 && (
+                    <p className="text-sm text-slate-500 py-4 text-center">
+                      No annotated frames available (saving may have been disabled
+                      for this run).
+                    </p>
+                  )}
                   <div className="grid grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
                     {annotatedFrames.slice(0, 24).map((frame, idx) => (
                       <button

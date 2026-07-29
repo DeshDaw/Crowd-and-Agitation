@@ -40,7 +40,8 @@ export const runsApi = {
   uploadFiles: async (
     runId: string,
     files: File[],
-    video?: File
+    video?: File,
+    onProgress?: (percent: number) => void
   ): Promise<{ run_id: string; uploaded_files: string[]; total_files: number }> => {
     const formData = new FormData();
 
@@ -52,15 +53,27 @@ export const runsApi = {
       formData.append('video', video);
     }
 
+    // No timeout: large image batches / videos legitimately exceed the
+    // shared 60s client timeout on slow connections.
     const response = await apiClient.post(`/runs/${runId}/upload`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 0,
+      onUploadProgress: (e) => {
+        if (onProgress && e.total) {
+          onProgress(Math.min(99, Math.round((e.loaded / e.total) * 100)));
+        }
+      },
     });
     return response.data;
   },
 
-  // Start processing
-  start: async (runId: string): Promise<{ run_id: string; status: string; message: string }> => {
-    const response = await apiClient.post(`/runs/${runId}/start`);
+  // Start processing; the user's final config edits ride along so the run
+  // executes with what the Configure step shows, not creation-time defaults.
+  start: async (
+    runId: string,
+    config?: Partial<RunConfig>
+  ): Promise<{ run_id: string; status: string; message: string }> => {
+    const response = await apiClient.post(`/runs/${runId}/start`, config ?? null);
     return response.data;
   },
 
@@ -120,12 +133,13 @@ export const runsApi = {
     return `${API_BASE_URL}/api/runs/${runId}/download?path=${encodeURIComponent(path)}`;
   },
 
-  // Get artifact URL
+  // Get artifact URL (named artifacts require their extensioned route names,
+  // e.g. "summary.json", "density_plot.png" — matching files.py)
   getArtifactUrl: (runId: string, artifact: string, filename?: string): string => {
     if (filename && ['annotated', 'heatmaps', 'escalation'].includes(artifact)) {
-      return `${API_BASE_URL}/api/runs/${runId}/artifacts/${artifact}/${filename}`;
+      return `/api/runs/${runId}/artifacts/${artifact}/${encodeURIComponent(filename)}`;
     }
-    return `${API_BASE_URL}/api/runs/${runId}/artifacts/${artifact}`;
+    return `/api/runs/${runId}/artifacts/${artifact}`;
   },
 
   // List frames

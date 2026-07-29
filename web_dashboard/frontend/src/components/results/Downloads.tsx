@@ -3,7 +3,6 @@
  */
 import { Download, FileJson, Image, Database } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card';
-import { API_BASE_URL } from '../../api/runs';
 
 interface DownloadsProps {
   runId: string;
@@ -13,37 +12,37 @@ export const Downloads = ({ runId }: DownloadsProps) => {
   const downloads = [
     {
       label: 'Summary JSON',
-      url: `${API_BASE_URL}/api/runs/${runId}/artifacts/summary.json`,
+      url: `/api/runs/${runId}/artifacts/summary.json`,
       icon: FileJson,
       description: 'Aggregate statistics',
     },
     {
       label: 'Metrics JSON',
-      url: `${API_BASE_URL}/api/runs/${runId}/artifacts/metrics.json`,
+      url: `/api/runs/${runId}/artifacts/metrics.json`,
       icon: FileJson,
       description: 'Per-frame metrics',
     },
     {
       label: 'Events JSON',
-      url: `${API_BASE_URL}/api/runs/${runId}/artifacts/events.json`,
+      url: `/api/runs/${runId}/artifacts/events.json`,
       icon: FileJson,
       description: 'Escalation events timeline',
     },
     {
       label: 'Density Plot',
-      url: `${API_BASE_URL}/api/runs/${runId}/artifacts/density_plot.png`,
+      url: `/api/runs/${runId}/artifacts/density_plot.png`,
       icon: Image,
       description: 'Crowd density trend',
     },
     {
       label: 'Agitation Plot',
-      url: `${API_BASE_URL}/api/runs/${runId}/artifacts/agitation_plot.png`,
+      url: `/api/runs/${runId}/artifacts/agitation_plot.png`,
       icon: Image,
       description: 'Agitation index trend',
     },
     {
       label: 'Database',
-      url: `${API_BASE_URL}/api/runs/${runId}/artifacts/database.db`,
+      url: `/api/runs/${runId}/artifacts/database.db`,
       icon: Database,
       description: 'SQLite database',
     },

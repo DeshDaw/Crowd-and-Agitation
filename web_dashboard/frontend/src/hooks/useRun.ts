@@ -93,25 +93,15 @@ export const useRun = () => {
         setError(null);
         setUploadProgress(0);
 
-        // Simulate progress since we don't have upload progress from backend
-        let currentProgress = 0;
-        const progressInterval = setInterval(() => {
-          currentProgress += 10;
-          if (currentProgress >= 90) {
-            clearInterval(progressInterval);
-            setUploadProgress(90);
-          } else {
-            setUploadProgress(currentProgress);
-          }
-        }, 500);
+        const response = await runsApi.uploadFiles(runId, files, video, (pct) =>
+          setUploadProgress(pct)
+        );
 
-        const response = await runsApi.uploadFiles(runId, files, video);
-
-        clearInterval(progressInterval);
         setUploadProgress(100);
-
         return response;
       } catch (error: any) {
+        // Reset so the upload step stays usable for a retry
+        setUploadProgress(0);
         setError(error.response?.data?.detail || 'Failed to upload files');
         throw error;
       }
@@ -119,11 +109,15 @@ export const useRun = () => {
     [setUploadProgress, setError]
   );
 
+  const resetUploadProgress = useCallback(() => {
+    setUploadProgress(0);
+  }, [setUploadProgress]);
+
   const startProcessing = useCallback(
-    async (runId: string) => {
+    async (runId: string, config?: Partial<RunConfig>) => {
       try {
         setError(null);
-        const response = await runsApi.start(runId);
+        const response = await runsApi.start(runId, config);
         startPolling();
         return response;
       } catch (error: any) {
@@ -200,6 +194,7 @@ export const useRun = () => {
     progress,
     createRun,
     uploadFiles,
+    resetUploadProgress,
     startProcessing,
     cancelRun,
     deleteRun,

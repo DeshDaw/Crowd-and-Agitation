@@ -1,7 +1,7 @@
 /**
  * Main dashboard page with runs list
  */
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Activity, Trash2, AlertTriangle } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
@@ -13,6 +13,7 @@ import { runsApi } from '../api/runs';
 export const Dashboard = () => {
   const navigate = useNavigate();
   const { runs, refreshRuns } = useRunsStore();
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     refreshRuns();
@@ -23,7 +24,14 @@ export const Dashboard = () => {
   const handleDelete = async (e: React.MouseEvent, runId: string) => {
     e.stopPropagation();
     if (confirm('Delete this run? This cannot be undone.')) {
-      await runsApi.delete(runId);
+      try {
+        setActionError(null);
+        await runsApi.delete(runId);
+      } catch (err: any) {
+        setActionError(
+          err.response?.data?.detail || `Failed to delete run ${runId}`
+        );
+      }
       refreshRuns();
     }
   };
@@ -55,6 +63,12 @@ export const Dashboard = () => {
 
       {/* Main content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {actionError && (
+          <div className="mb-4 flex items-center gap-2 p-4 bg-red-50 text-red-700 rounded-lg text-sm">
+            <AlertTriangle className="h-4 w-4" />
+            <span>{actionError}</span>
+          </div>
+        )}
         <Card>
           <CardHeader>
             <CardTitle>Processing Runs ({runs.length})</CardTitle>

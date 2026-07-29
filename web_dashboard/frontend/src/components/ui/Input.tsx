@@ -1,6 +1,7 @@
 /**
  * Input and Label components
  */
+import { useId } from 'react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import type { InputHTMLAttributes, ReactNode } from 'react';
@@ -19,7 +20,8 @@ export const Input = ({
   id,
   ...props
 }: InputProps) => {
-  const inputId = id || `input-${Math.random().toString(36).substr(2, 9)}`;
+  const generatedId = useId();
+  const inputId = id || generatedId;
 
   return (
     <div className="w-full">
@@ -68,7 +70,8 @@ export const Select = ({
   id,
   ...props
 }: SelectProps) => {
-  const selectId = id || `select-${Math.random().toString(36).substr(2, 9)}`;
+  const generatedId = useId();
+  const selectId = id || generatedId;
 
   return (
     <div className="w-full">

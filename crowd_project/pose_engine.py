@@ -14,8 +14,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-import config
-from model_registry import ModelRegistry
+from . import config
+from .model_registry import ModelRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class PoseResult:
 
 def _resize_for_inference(
     image: np.ndarray,
-    max_width: int = config.MAX_INFERENCE_WIDTH,
+    max_width: int,
 ) -> tuple[np.ndarray, float]:
     h, w = image.shape[:2]
     if w <= max_width:
@@ -49,8 +49,16 @@ class PoseEngine:
     The engine is decoupled from model loading via :class:`ModelRegistry`.
     """
 
-    def __init__(self, registry: ModelRegistry) -> None:
+    def __init__(
+        self,
+        registry: ModelRegistry,
+        max_inference_width: int | None = None,
+    ) -> None:
         self._predictor = registry.get("pose")
+        self._max_width = (
+            max_inference_width if max_inference_width is not None
+            else config.MAX_INFERENCE_WIDTH
+        )
 
     def extract(
         self,
@@ -62,13 +70,13 @@ class PoseEngine:
 
         Args:
             image: BGR image (H, W, 3).
-            resize: Down-scale to MAX_INFERENCE_WIDTH before inference.
+            resize: Down-scale to the configured max inference width first.
 
         Returns:
             (pose_results, inference_time_seconds)
         """
         if resize:
-            img_in, inv_scale = _resize_for_inference(image)
+            img_in, inv_scale = _resize_for_inference(image, self._max_width)
         else:
             img_in, inv_scale = image, 1.0
 

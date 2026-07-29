@@ -4,29 +4,20 @@ Model Registry — lazy-loads and caches Detectron2 models.
 Each inference engine requests its model from the registry by key.
 Models are built on first access and cached for reuse.
 Device abstraction is handled here so engines stay device-agnostic.
+
+Score thresholds are resolved per registry instance (not at import time),
+so per-run configuration overrides actually reach the models.
 """
 
 import logging
-from typing import Any
 
 from detectron2 import model_zoo
 from detectron2.config import get_cfg
 from detectron2.engine import DefaultPredictor
 
-import config
+from . import config
 
 logger = logging.getLogger(__name__)
-
-_MODEL_SPECS: dict[str, dict[str, Any]] = {
-    "detector": {
-        "config_file": config.DETECTOR_CONFIG,
-        "score_thresh": config.CONFIDENCE_THRESHOLD,
-    },
-    "pose": {
-        "config_file": config.POSE_CONFIG,
-        "score_thresh": config.POSE_CONFIDENCE_THRESHOLD,
-    },
-}
 
 
 class ModelRegistry:
@@ -40,9 +31,32 @@ class ModelRegistry:
         pose_predictor = registry.get("pose")
     """
 
-    def __init__(self, device: str | None = None) -> None:
+    def __init__(
+        self,
+        device: str | None = None,
+        confidence_threshold: float | None = None,
+        pose_confidence_threshold: float | None = None,
+    ) -> None:
         self._device: str = (device or config.DEVICE).lower()
         self._cache: dict[str, DefaultPredictor] = {}
+        self._specs: dict[str, dict[str, object]] = {
+            "detector": {
+                "config_file": config.DETECTOR_CONFIG,
+                "score_thresh": (
+                    confidence_threshold
+                    if confidence_threshold is not None
+                    else config.CONFIDENCE_THRESHOLD
+                ),
+            },
+            "pose": {
+                "config_file": config.POSE_CONFIG,
+                "score_thresh": (
+                    pose_confidence_threshold
+                    if pose_confidence_threshold is not None
+                    else config.POSE_CONFIDENCE_THRESHOLD
+                ),
+            },
+        }
         logger.info("ModelRegistry created (device=%s)", self._device)
 
     # ------------------------------------------------------------------
@@ -74,11 +88,11 @@ class ModelRegistry:
     # internal
     # ------------------------------------------------------------------
     def _build(self, name: str) -> DefaultPredictor:
-        if name not in _MODEL_SPECS:
+        if name not in self._specs:
             raise KeyError(
-                f"Unknown model '{name}'. Registered: {list(_MODEL_SPECS)}"
+                f"Unknown model '{name}'. Registered: {list(self._specs)}"
             )
-        spec = _MODEL_SPECS[name]
+        spec = self._specs[name]
         logger.info("Building model '%s' ...", name)
 
         cfg = get_cfg()

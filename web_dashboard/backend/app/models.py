@@ -38,6 +38,9 @@ class RunConfig(BaseModel):
     save_heatmaps: bool = Field(default=True)
     generate_plots: bool = Field(default=True)
     save_database: bool = Field(default=True)
+    video_file: Optional[str] = Field(
+        default=None, description="Uploaded video filename, if this is a video run"
+    )
 
 
 class RunCreateResponse(BaseModel):
@@ -55,6 +58,7 @@ class ProgressInfo(BaseModel):
     processed_frames: int = 0
     current_frame: Optional[str] = None
     current_stage: Optional[str] = None
+    message: Optional[str] = None
     eta_seconds: Optional[int] = None
     per_stage_timings: dict[str, float] = Field(default_factory=dict)
 
@@ -124,14 +128,10 @@ class EventTimelineResponse(BaseModel):
 
 
 class ProcessingStage(str, Enum):
-    """Individual processing stages."""
+    """Processing stages as written to progress.current_stage by the runner."""
 
-    DETECTION = "detection"
-    POSE = "pose"
-    TRACKING = "tracking"
-    DENSITY = "density"
-    MOTION = "motion"
-    AGITATION = "agitation"
+    VIDEO_EXTRACTION = "video_extraction"
+    INFERENCE = "inference"
     CLASSIFICATION = "classification"
-    EVENTS = "events"
-    PERSISTENCE = "persistence"
+    EVENT_DETECTION = "event_detection"
+    SAVING_OUTPUTS = "saving_outputs"

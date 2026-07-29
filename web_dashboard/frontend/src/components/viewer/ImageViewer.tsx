@@ -1,9 +1,8 @@
 /**
  * Image viewer component for annotated frames and heatmaps
  */
-import { useEffect, useState } from 'react';
-import { ChevronLeft, ChevronRight, X, AlertTriangle } from 'lucide-react';
-import { API_BASE_URL } from '../../api/runs';
+import { useCallback, useEffect, useState } from 'react';
+import { ChevronLeft, ChevronRight, X, AlertTriangle, ImageOff } from 'lucide-react';
 
 interface ImageViewerProps {
   runId: string;
@@ -15,47 +14,61 @@ interface ImageViewerProps {
   onNavigate: (index: number) => void;
 }
 
+/** frame_001.jpg -> frame_001_heatmap.jpg (matches the pipeline's naming) */
+const heatmapName = (frame: string) => frame.replace(/(\.\w+)$/, '_heatmap$1');
+
 export const ImageViewer = ({
   runId,
   frameNames,
   currentIndex,
-  mode,
+  mode: initialMode,
   isEvent,
   onClose,
   onNavigate,
 }: ImageViewerProps) => {
   const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  const [mode, setMode] = useState<'annotated' | 'heatmap'>(initialMode);
 
   const currentFrame = frameNames[currentIndex];
-  const imageUrl = mode === 'annotated'
-    ? `${API_BASE_URL}/api/runs/${runId}/artifacts/annotated/${currentFrame}`
-    : `${API_BASE_URL}/api/runs/${runId}/artifacts/heatmaps/${currentFrame.replace(/\.\w+$/, '')}_heatmap$&`;
 
-  const goPrev = () => {
-    if (currentIndex > 0) {
-      setLoading(true);
-      onNavigate(currentIndex - 1);
-    }
-  };
-
-  const goNext = () => {
-    if (currentIndex < frameNames.length - 1) {
-      setLoading(true);
-      onNavigate(currentIndex + 1);
-    }
-  };
-
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') onClose();
-    if (e.key === 'ArrowLeft') goPrev();
-    if (e.key === 'ArrowRight') goNext();
-  };
-
-  // Add keyboard listener
+  // Reset load state whenever the displayed image changes, regardless of
+  // whether navigation came from inside or from the parent
   useEffect(() => {
+    setLoading(true);
+    setFailed(false);
+  }, [currentIndex, mode]);
+
+  const goPrev = useCallback(() => {
+    if (currentIndex > 0) onNavigate(currentIndex - 1);
+  }, [currentIndex, onNavigate]);
+
+  const goNext = useCallback(() => {
+    if (currentIndex < frameNames.length - 1) onNavigate(currentIndex + 1);
+  }, [currentIndex, frameNames.length, onNavigate]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        goPrev();
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        goNext();
+      }
+    };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  });
+  }, [onClose, goPrev, goNext]);
+
+  if (!currentFrame) return null;
+
+  const imageUrl =
+    mode === 'annotated'
+      ? `/api/runs/${runId}/artifacts/annotated/${encodeURIComponent(currentFrame)}`
+      : `/api/runs/${runId}/artifacts/heatmaps/${encodeURIComponent(heatmapName(currentFrame))}`;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center">
@@ -73,9 +86,25 @@ export const ImageViewer = ({
             </span>
           )}
         </div>
-        <button onClick={onClose} className="p-2 text-white hover:bg-white/10 rounded">
-          <X className="h-6 w-6" />
-        </button>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded overflow-hidden border border-white/30 text-sm">
+            <button
+              onClick={() => setMode('annotated')}
+              className={`px-3 py-1 ${mode === 'annotated' ? 'bg-white/20 text-white' : 'text-white/60 hover:text-white'}`}
+            >
+              Annotated
+            </button>
+            <button
+              onClick={() => setMode('heatmap')}
+              className={`px-3 py-1 ${mode === 'heatmap' ? 'bg-white/20 text-white' : 'text-white/60 hover:text-white'}`}
+            >
+              Heatmap
+            </button>
+          </div>
+          <button onClick={onClose} className="p-2 text-white hover:bg-white/10 rounded">
+            <X className="h-6 w-6" />
+          </button>
+        </div>
       </div>
 
       {/* Navigation */}
@@ -98,17 +127,30 @@ export const ImageViewer = ({
 
       {/* Image */}
       <div className="max-w-[90vw] max-h-[80vh] relative">
-        {loading && (
+        {loading && !failed && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="animate-spin h-8 w-8 border-2 border-white border-t-transparent rounded-full" />
           </div>
         )}
-        <img
-          src={imageUrl}
-          alt={currentFrame}
-          className="max-w-full max-h-[80vh] object-contain"
-          onLoad={() => setLoading(false)}
-        />
+        {failed ? (
+          <div className="flex flex-col items-center gap-3 text-white/70 p-12">
+            <ImageOff className="h-10 w-10" />
+            <span>
+              {mode === 'heatmap' ? 'Heatmap' : 'Annotated frame'} not available
+            </span>
+          </div>
+        ) : (
+          <img
+            src={imageUrl}
+            alt={currentFrame}
+            className="max-w-full max-h-[80vh] object-contain"
+            onLoad={() => setLoading(false)}
+            onError={() => {
+              setLoading(false);
+              setFailed(true);
+            }}
+          />
+        )}
       </div>
 
       {/* Footer */}

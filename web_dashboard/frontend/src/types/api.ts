@@ -26,6 +26,7 @@ export interface RunConfig {
   save_heatmaps: boolean;
   generate_plots: boolean;
   save_database: boolean;
+  video_file?: string | null;
 }
 
 export interface ProgressInfo {
@@ -33,7 +34,8 @@ export interface ProgressInfo {
   processed_frames: number;
   current_frame: string | null;
   current_stage: string | null;
-  eta_seconds?: number;
+  message?: string | null;
+  eta_seconds?: number | null;
   per_stage_timings: Record<string, number>;
 }
 
@@ -45,7 +47,7 @@ export interface RunStatus {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
-  error_message?: string;
+  error_message?: string | null;
 }
 
 export interface RunSummary {

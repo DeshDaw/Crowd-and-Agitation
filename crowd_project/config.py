@@ -63,6 +63,12 @@ TRACKER_MAX_LOST: int = 5  # frames before track is dropped
 DENSITY_LOW_SIGMA: float = 0.5
 DENSITY_HIGH_SIGMA: float = 1.5
 
+# Absolute floors so classification is not purely batch-relative:
+# "High Crowd" additionally requires density_ratio above this value, and any
+# frame below the low ceiling is "Low Crowd" regardless of batch statistics.
+DENSITY_HIGH_MIN_RATIO: float = 0.25
+DENSITY_LOW_MAX_RATIO: float = 0.05
+
 # =============================================================================
 # Heatmap (retained for annotated density overlays)
 # =============================================================================
@@ -82,6 +88,14 @@ KP_RIGHT_HIP: int = 12
 
 # Minimum keypoint visibility score (logit) to trust a keypoint
 KEYPOINT_VISIBILITY_THRESH: float = 2.0
+
+# Minimum number of visible keypoints (in both frames) required before a
+# per-person motion score is emitted at all
+MIN_VALID_KEYPOINTS: int = 6
+
+# Bounded per-track history length (only the last two entries are ever read
+# for motion; the rest exists for trend analysis)
+TRACK_HISTORY_MAXLEN: int = 30
 
 # =============================================================================
 # Agitation index weights  (must sum to 1.0)

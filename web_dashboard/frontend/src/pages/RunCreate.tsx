@@ -15,7 +15,7 @@ import type { RunConfig } from '../types/api';
 
 export const RunCreate = () => {
   const navigate = useNavigate();
-  const { createRun, uploadFiles, startProcessing } = useRun();
+  const { createRun, uploadFiles, startProcessing, resetUploadProgress } = useRun();
   const uploadProgress = useRunsStore((s) => s.uploadProgress);
 
   const [step, setStep] = useState<'upload' | 'config' | 'processing'>('upload');
@@ -40,17 +40,29 @@ export const RunCreate = () => {
 
   // Check CUDA availability
   useEffect(() => {
-    runsApi.health().then((h) => setCudaAvailable(h.cuda_available));
+    runsApi.health().then((h) => setCudaAvailable(h.cuda_available)).catch(() => {});
   }, []);
 
+  // Entering the upload step must always leave it usable (progress reset)
+  useEffect(() => {
+    if (step === 'upload') resetUploadProgress();
+  }, [step, resetUploadProgress]);
+
   const handleFilesSelected = async (files: File[], video?: File) => {
+    let newRunId: string | null = null;
     try {
       setError(null);
-      const newRunId = await createRun(config);
+      newRunId = await createRun(config);
       setRunId(newRunId);
       await uploadFiles(newRunId, files, video);
       setStep('config');
     } catch (err: any) {
+      // Delete the orphan run so failed attempts don't pile up as
+      // permanently-"created" entries in the dashboard list
+      if (newRunId) {
+        runsApi.delete(newRunId).catch(() => {});
+        setRunId(null);
+      }
       setError(err.message || 'Failed to upload files');
     }
   };
@@ -59,7 +71,9 @@ export const RunCreate = () => {
     if (!runId) return;
     try {
       setError(null);
-      await startProcessing(runId);
+      // Send the user's final config — edits made in the Configure step
+      // after upload must reach the run
+      await startProcessing(runId, config);
       navigate(`/runs/${runId}`);
     } catch (err: any) {
       setError(err.message || 'Failed to start processing');

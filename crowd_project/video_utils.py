@@ -5,20 +5,32 @@ Load images from a folder or extract frames from video.
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Iterator
 
 import cv2
 import numpy as np
 
-from config import IMAGE_EXTENSIONS, INPUT_IMAGES_DIR, INPUT_VIDEO_DIR, VIDEO_EXTRACT_FPS
+from .config import IMAGE_EXTENSIONS, INPUT_IMAGES_DIR, VIDEO_EXTRACT_FPS
 
 logger = logging.getLogger(__name__)
+
+_DIGIT_RE = re.compile(r"(\d+)")
+
+
+def _natural_key(name: str) -> tuple:
+    """Sort key treating digit runs numerically ('img9' < 'img10')."""
+    return tuple(
+        int(part) if part.isdigit() else part.lower()
+        for part in _DIGIT_RE.split(name)
+    )
 
 
 def get_image_paths(input_dir: Path | None = None) -> list[Path]:
     """
-    Collect all supported image paths from a directory, sorted by name.
+    Collect all supported image paths from a directory, in natural sort order
+    (numeric filename parts compared numerically, so frame_9 < frame_10).
 
     Args:
         input_dir: Folder to scan. Defaults to config INPUT_IMAGES_DIR.
@@ -36,7 +48,7 @@ def get_image_paths(input_dir: Path | None = None) -> list[Path]:
         for p in folder.iterdir()
         if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
     ]
-    paths.sort(key=lambda p: p.name)
+    paths.sort(key=lambda p: _natural_key(p.name))
     logger.info("Found %d images in %s", len(paths), folder)
     return paths
 
@@ -103,20 +115,31 @@ def extract_frames_from_video(
         logger.error("Could not open video: %s", video_path)
         return []
 
-    video_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    video_fps = cap.get(cv2.CAP_PROP_FPS)
+    if not video_fps or video_fps <= 0:
+        logger.warning(
+            "Video reports no FPS (%s); assuming 25.0 — extraction timing "
+            "may be inaccurate: %s", video_fps, video_path,
+        )
+        video_fps = 25.0
     interval = 1.0 / (fps or video_fps)
     output_frames_dir.mkdir(parents=True, exist_ok=True)
 
     frame_paths: list[Path] = []
     frame_index = 0
-    last_time = -1.0
+    # Start one interval in the past so the frame at t=0 is always taken,
+    # regardless of how the requested fps compares to the video fps.
+    last_time = -interval
+    # Epsilon absorbs IEEE-754 ties when fps == video_fps (extract-every-frame),
+    # where t and last_time + interval are mathematically equal.
+    eps = 1e-6
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
         t = frame_index / video_fps
-        if t >= last_time + interval:
+        if t >= last_time + interval - eps:
             name = f"frame_{len(frame_paths):06d}.jpg"
             out_path = output_frames_dir / name
             cv2.imwrite(str(out_path), frame)

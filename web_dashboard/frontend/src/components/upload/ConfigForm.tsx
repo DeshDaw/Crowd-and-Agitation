@@ -13,6 +13,9 @@ interface ConfigFormProps {
 
 export const ConfigForm = ({ config, onChange, cudaAvailable }: ConfigFormProps) => {
   const handleChange = (key: keyof RunConfig, value: any) => {
+    // Clearing a numeric input yields NaN, which would serialize to null and
+    // make the backend reject the config — keep the previous value instead
+    if (typeof value === 'number' && Number.isNaN(value)) return;
     onChange({ ...config, [key]: value });
   };
 

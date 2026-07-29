@@ -10,7 +10,7 @@ from typing import Tuple
 import cv2
 import numpy as np
 
-from config import (
+from .config import (
     HEATMAP_ALPHA,
     HEATMAP_COLORMAP,
     HEATMAP_DOWNSCALE,

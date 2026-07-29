@@ -1,78 +1,117 @@
 """
 Background processing service that adapts FrameProcessor for API usage.
+
+Runs are executed by a single dedicated worker thread consuming a queue:
+two concurrent runs would keep four Detectron2 models resident (and race on
+GPU memory once CUDA is in play), so queued execution is both the safe and
+the fast option — the expensive model build is also reused per process.
+
+Per-run configuration is passed as an explicit PipelineSettings object; no
+module-global config is mutated anywhere.
 """
 
-import json
 import logging
-import os
+import queue
 import sys
 import threading
 import time
-import traceback
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from queue import Queue
-from typing import Any, Callable
+from typing import Any
 
-import cv2
-import numpy as np
+# Resolve detectron2 BEFORE the repo root goes on sys.path: the vendored
+# detectron2/ source clone at the repo root would otherwise shadow the
+# editable install as an empty namespace package.
+try:
+    import detectron2  # noqa: F401
+except ImportError:
+    pass
 
-# Add crowd_project paths so both `import crowd_project.xxx` (used here)
-# and bare `import config` (used inside crowd_project modules) resolve.
-_RECAM_ROOT = Path(__file__).parent.parent.parent.parent.parent
-_CROWD_DIR = _RECAM_ROOT / "crowd_project"
-for _p in (str(_RECAM_ROOT), str(_CROWD_DIR)):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+# Ensure the repository root is importable so `crowd_project` (a real
+# package) resolves regardless of the uvicorn working directory.
+_REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-# Import crowd_project modules
-import crowd_project.config as crowd_config
+from crowd_project.analytics import (
+    build_summary,
+    plot_agitation_trend,
+    plot_density_trend,
+    save_json,
+)
 from crowd_project.database import CrowdDatabase
 from crowd_project.main import FrameProcessor
+from crowd_project.settings import PipelineSettings
 from crowd_project.video_utils import extract_frames_from_video, get_image_paths, load_image
 
 from .storage import (
     create_run_workspace,
     delete_run_workspace,
-    get_run_dir,
     get_run_input_dir,
     get_run_output_dir,
+    load_status,
     save_status,
     update_status,
-    load_status,
+    update_status_progress,
 )
 
 logger = logging.getLogger(__name__)
 
-# Global executor for background processing
-_executor = ThreadPoolExecutor(max_workers=2)
 _active_runs: dict[str, "RunContext"] = {}
 _lock = threading.Lock()
+
+_run_queue: "queue.Queue[str]" = queue.Queue()
+_worker_started = False
+
+# Progress writes are throttled to roughly this interval; the dashboard
+# polls every 2 s, so rewriting status.json per frame is pure churn.
+_PROGRESS_WRITE_INTERVAL = 0.5
 
 
 @dataclass
 class RunContext:
-    """Context for an active run."""
+    """Context for an active (queued or processing) run."""
 
     run_id: str
     config: dict[str, Any]
     state: str = "created"
     progress: dict = field(default_factory=dict)
     cancel_event: threading.Event = field(default_factory=threading.Event)
-    thread: threading.Thread | None = None
     error_message: str | None = None
 
 
+def _ensure_worker() -> None:
+    global _worker_started
+    with _lock:
+        if _worker_started:
+            return
+        _worker_started = True
+    thread = threading.Thread(target=_worker_loop, name="run-worker", daemon=True)
+    thread.start()
+
+
+def _worker_loop() -> None:
+    while True:
+        run_id = _run_queue.get()
+        with _lock:
+            context = _active_runs.get(run_id)
+        if context is None:
+            continue
+        if context.cancel_event.is_set():
+            _set_state(run_id, "cancelled")
+            with _lock:
+                _active_runs.pop(run_id, None)
+            continue
+        _process_run(context)
+
+
 def _update_progress(run_id: str, updates: dict[str, Any]) -> None:
-    """Update progress in status file."""
+    """Update progress in memory and the status file."""
     with _lock:
         if run_id in _active_runs:
             _active_runs[run_id].progress.update(updates)
-    update_status(
-        run_id, {"progress": {**load_status(run_id).get("progress", {}), **updates}}
-    )
+    update_status_progress(run_id, updates)
 
 
 def _set_state(run_id: str, state: str, error: str | None = None) -> None:
@@ -83,7 +122,7 @@ def _set_state(run_id: str, state: str, error: str | None = None) -> None:
             if error:
                 _active_runs[run_id].error_message = error
 
-    updates = {"state": state}
+    updates: dict[str, Any] = {"state": state}
     if state == "processing":
         updates["started_at"] = datetime.now().isoformat()
     elif state in ("completed", "failed", "cancelled"):
@@ -94,51 +133,17 @@ def _set_state(run_id: str, state: str, error: str | None = None) -> None:
     update_status(run_id, updates)
 
 
-def _copy_config_to_crowd_project(run_config: dict[str, Any], output_dir: Path) -> None:
-    """Temporarily override crowd_project config values."""
-    # Store original values
-    run_config["_original"] = {}
-
-    # Override config values
-    overrides = {
-        "DEVICE": run_config.get("device", "cpu"),
-        "CONFIDENCE_THRESHOLD": run_config.get("confidence_threshold", 0.5),
-        "POSE_CONFIDENCE_THRESHOLD": run_config.get("pose_confidence_threshold", 0.5),
-        "MAX_INFERENCE_WIDTH": run_config.get("max_inference_width", 960),
-        "TRACKER_IOU_THRESHOLD": run_config.get("tracker_iou_threshold", 0.3),
-        "TRACKER_MAX_LOST": run_config.get("tracker_max_lost", 5),
-        "DENSITY_LOW_SIGMA": run_config.get("density_low_sigma", 0.5),
-        "DENSITY_HIGH_SIGMA": run_config.get("density_high_sigma", 1.5),
-        "AGITATION_THRESHOLD_SIGMA": run_config.get("agitation_threshold_sigma", 2.0),
-        "VIDEO_EXTRACT_FPS": run_config.get("video_extract_fps"),
-        "OUTPUT_DIR": output_dir,
-        "OUTPUT_ANNOTATED_DIR": output_dir / "annotated",
-        "OUTPUT_HEATMAPS_DIR": output_dir / "heatmaps",
-        "OUTPUT_ESCALATION_DIR": output_dir / "escalation_frames",
-    }
-
-    for key, value in overrides.items():
-        if hasattr(crowd_config, key):
-            run_config["_original"][key] = getattr(crowd_config, key)
-            setattr(crowd_config, key, value)
-
-    # Ensure directories exist
-    crowd_config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    crowd_config.OUTPUT_ANNOTATED_DIR.mkdir(parents=True, exist_ok=True)
-    crowd_config.OUTPUT_HEATMAPS_DIR.mkdir(parents=True, exist_ok=True)
-    crowd_config.OUTPUT_ESCALATION_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _restore_config(run_config: dict[str, Any]) -> None:
-    """Restore original crowd_project config values."""
-    original = run_config.get("_original", {})
-    for key, value in original.items():
-        if hasattr(crowd_config, key):
-            setattr(crowd_config, key, value)
+def _settings_for_run(run_config: dict[str, Any], output_dir: Path) -> PipelineSettings:
+    """Build per-run pipeline settings from the stored run config."""
+    settings = PipelineSettings.from_overrides(run_config)
+    settings.output_dir = output_dir
+    settings.save_annotated = bool(run_config.get("save_annotated", True))
+    settings.save_heatmaps = bool(run_config.get("save_heatmaps", True))
+    return settings
 
 
 def _process_run(context: RunContext) -> None:
-    """Main processing function for a run."""
+    """Main processing function for a run (executes on the worker thread)."""
     run_id = context.run_id
     run_config = context.config
 
@@ -150,16 +155,14 @@ def _process_run(context: RunContext) -> None:
         input_dir = get_run_input_dir(run_id)
         output_dir = get_run_output_dir(run_id)
 
-        # Override crowd_project config
-        _copy_config_to_crowd_project(run_config, output_dir)
-
         # Handle video extraction if needed
         video_file = run_config.get("video_file")
         if video_file:
-            _update_progress(run_id, {"current_stage": "video_extraction", "message": f"Extracting frames from {video_file}"})
-            from crowd_project.video_utils import extract_frames_from_video
-
-            video_path = input_dir / video_file
+            _update_progress(run_id, {
+                "current_stage": "video_extraction",
+                "message": f"Extracting frames from {video_file}",
+            })
+            video_path = input_dir / Path(video_file).name
             fps = run_config.get("video_extract_fps")
             frames_dir = input_dir / f"extracted_{video_path.stem}"
             extract_frames_from_video(video_path, frames_dir, fps=fps)
@@ -172,71 +175,61 @@ def _process_run(context: RunContext) -> None:
 
         total_frames = len(image_paths)
         _update_progress(
-            run_id, {"total_frames": total_frames, "current_stage": "inference"}
+            run_id,
+            {"total_frames": total_frames, "current_stage": "inference", "message": None},
         )
 
-        # Initialize processor
-        processor = FrameProcessor(device=run_config.get("device", "cpu"))
+        settings = _settings_for_run(run_config, output_dir)
+        processor = FrameProcessor(settings=settings)
 
         # Create database if needed
         db = None
         if run_config.get("save_database", True):
-            db_path = output_dir / "crowd_analysis.db"
-            db = CrowdDatabase(db_path)
+            db = CrowdDatabase(output_dir / "crowd_analysis.db")
 
-        # Process frames
-        from crowd_project.analytics import build_summary, save_json
-        from crowd_project.heatmap import generate_heatmap_visualization
-        from crowd_project.tracker import Track
-
-        timings = {"detection": [], "pose": []}
+        timings = {"detection": 0.0, "pose": 0.0, "frames": 0}
+        started = time.monotonic()
+        last_write = 0.0
 
         for idx, path in enumerate(image_paths):
             if context.cancel_event.is_set():
                 _set_state(run_id, "cancelled")
                 if db:
                     db.close()
-                _restore_config(run_config)
                 return
 
             image = load_image(path)
             if image is None:
                 continue
 
-            # Process frame
+            # Process frame (annotated/heatmap images are written inside)
             record = processor.process_frame(image, path.name, idx)
 
-            # Track timings
-            timings["detection"].append(record.get("inference_time_det", 0))
-            timings["pose"].append(record.get("inference_time_pose", 0))
+            timings["detection"] += record.get("inference_time_det", 0.0)
+            timings["pose"] += record.get("inference_time_pose", 0.0)
+            timings["frames"] += 1
 
-            # Save outputs based on config
-            if run_config.get("save_annotated", True):
-                cv2.imwrite(
-                    str(output_dir / "annotated" / path.name),
-                    record["annotated_image"],
-                )
-
-            if run_config.get("save_heatmaps", True):
-                hm_name = path.stem + "_heatmap" + path.suffix
-                cv2.imwrite(str(output_dir / "heatmaps" / hm_name), record["heatmap_overlay"])
-
-            # Update progress
-            _update_progress(
-                run_id,
-                {
-                    "processed_frames": idx + 1,
-                    "current_frame": path.name,
-                    "per_stage_timings": {
-                        "avg_detection_ms": round(sum(timings["detection"]) / len(timings["detection"]) * 1000, 2),
-                        "avg_pose_ms": round(sum(timings["pose"]) / len(timings["pose"]) * 1000, 2),
+            now = time.monotonic()
+            if now - last_write >= _PROGRESS_WRITE_INTERVAL or idx + 1 == total_frames:
+                last_write = now
+                n = max(timings["frames"], 1)
+                per_frame = (now - started) / max(idx + 1, 1)
+                _update_progress(
+                    run_id,
+                    {
+                        "processed_frames": idx + 1,
+                        "current_frame": path.name,
+                        "eta_seconds": int(per_frame * (total_frames - idx - 1)),
+                        "per_stage_timings": {
+                            "avg_detection_ms": round(timings["detection"] / n * 1000, 2),
+                            "avg_pose_ms": round(timings["pose"] / n * 1000, 2),
+                        },
                     },
-                },
-            )
+                )
 
         # Finalize batch
         _update_progress(run_id, {"current_stage": "classification"})
-        mu_ag, std_ag, ag_threshold = processor.finalize_batch()
+        _mu_ag, _std_ag, ag_threshold = processor.finalize_batch()
 
         # Detect escalation events
         _update_progress(run_id, {"current_stage": "event_detection"})
@@ -264,27 +257,22 @@ def _process_run(context: RunContext) -> None:
             {
                 k: v
                 for k, v in r.items()
-                if k
-                not in ("person_rows", "annotated_image", "heatmap_overlay", "active_tracks")
+                if k not in (
+                    "person_rows", "keypoint_snapshots",
+                    "annotated_path", "heatmap_path",
+                )
             }
             for r in records
         ]
         save_json(metrics_rows, output_dir / "metrics.json")
 
-        summary = build_summary(
-            records, len(processor.event_manager.events)
-        )
+        summary = build_summary(records, len(processor.event_manager.events))
         save_json(summary, output_dir / "summary.json")
 
         processor.event_manager.save_events_json(output_dir / "event_timeline.json")
 
         # Generate plots
         if run_config.get("generate_plots", True):
-            from crowd_project.analytics import (
-                plot_agitation_trend,
-                plot_density_trend,
-            )
-
             names = [r["frame_name"] for r in records]
             density_vals = [r["density_ratio"] for r in records]
             agitation_vals = [r["agitation_index"] for r in records]
@@ -303,10 +291,8 @@ def _process_run(context: RunContext) -> None:
         logger.exception("Run %s failed", run_id)
         _set_state(run_id, "failed", error=str(e))
     finally:
-        _restore_config(run_config)
         with _lock:
-            if run_id in _active_runs:
-                del _active_runs[run_id]
+            _active_runs.pop(run_id, None)
 
 
 def create_run(run_id: str, config: dict[str, Any]) -> RunContext:
@@ -335,19 +321,44 @@ def create_run(run_id: str, config: dict[str, Any]) -> RunContext:
     return context
 
 
-def start_run(run_id: str) -> bool:
-    """Start processing a run. Returns True if started."""
+def _rehydrate_run(run_id: str) -> RunContext | None:
+    """Rebuild an in-memory context from status.json (e.g. after restart)."""
+    status = load_status(run_id)
+    if not status:
+        return None
+    if status.get("state") not in ("created", "queued", "uploading"):
+        return None
+    context = RunContext(
+        run_id=run_id,
+        config=status.get("config", {}),
+        state=status.get("state", "created"),
+        progress=status.get("progress", {}),
+    )
     with _lock:
-        if run_id not in _active_runs:
-            return False
-        context = _active_runs[run_id]
+        _active_runs[run_id] = context
+    return context
 
-    if context.state not in ("created", "queued"):
+
+def start_run(run_id: str, config_overrides: dict[str, Any] | None = None) -> bool:
+    """Queue a run for processing. Returns True if queued."""
+    with _lock:
+        context = _active_runs.get(run_id)
+
+    if context is None:
+        context = _rehydrate_run(run_id)
+        if context is None:
+            return False
+
+    if context.state not in ("created", "queued", "uploading"):
         return False
 
-    thread = threading.Thread(target=_process_run, args=(context,), daemon=True)
-    context.thread = thread
-    thread.start()
+    if config_overrides:
+        context.config.update(config_overrides)
+        update_status(run_id, {"config": context.config})
+
+    _set_state(run_id, "queued")
+    _ensure_worker()
+    _run_queue.put(run_id)
     return True
 
 
@@ -367,34 +378,41 @@ def cancel_run(run_id: str) -> bool:
 
 
 def get_run_status(run_id: str) -> dict[str, Any] | None:
-    """Get current status of a run."""
-    # First check active runs for live updates
+    """
+    Get current status of a run.
+
+    The persisted status.json is the base (it carries created_at, config,
+    started_at); live in-memory state/progress is merged over it so active
+    runs report both fresh progress and their real timestamps.
+    """
+    status = load_status(run_id)
+
     with _lock:
-        if run_id in _active_runs:
-            context = _active_runs[run_id]
-            return {
-                "run_id": run_id,
-                "state": context.state,
-                "progress": context.progress,
-                "config": context.config,
-            }
+        context = _active_runs.get(run_id)
+        if context is not None:
+            status = status or {"run_id": run_id, "config": context.config}
+            status["state"] = context.state
+            merged_progress = dict(status.get("progress", {}))
+            merged_progress.update(context.progress)
+            status["progress"] = merged_progress
 
-    # Fall back to status file
-    from ..services.storage import load_status
-
-    return load_status(run_id)
+    return status
 
 
 def cleanup_run(run_id: str) -> bool:
     """Cancel and delete a run."""
     cancel_run(run_id)
 
-    # Wait briefly for thread to finish
+    # Give a processing run a moment to observe the cancel flag before the
+    # workspace disappears under it.
+    for _ in range(20):
+        with _lock:
+            if run_id not in _active_runs:
+                break
+        time.sleep(0.1)
+
     with _lock:
-        if run_id in _active_runs:
-            context = _active_runs[run_id]
-            if context.thread and context.thread.is_alive():
-                context.thread.join(timeout=2.0)
+        _active_runs.pop(run_id, None)
 
     delete_run_workspace(run_id)
     return True

@@ -9,17 +9,26 @@ without changing the public API.
 from __future__ import annotations
 
 import logging
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Deque, Sequence
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-import config
-from detection_engine import Detection
-from pose_engine import PoseResult
+from . import config
+from .detection_engine import Detection
+from .pose_engine import PoseResult
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class KeypointSnapshot:
+    """One pose observation for a track, stamped with its frame index."""
+    frame_index: int
+    keypoints: np.ndarray        # (17, 2) float32
+    scores: np.ndarray           # (17,) float32 visibility logits
 
 
 @dataclass
@@ -29,8 +38,12 @@ class Track:
     bbox: np.ndarray                            # latest xyxy
     centroid: tuple[float, float]
     last_seen_frame: int
-    motion_history: list[float] = field(default_factory=list)
-    keypoint_history: list[np.ndarray] = field(default_factory=list)
+    motion_history: Deque[float] = field(
+        default_factory=lambda: deque(maxlen=config.TRACK_HISTORY_MAXLEN)
+    )
+    keypoint_history: Deque[KeypointSnapshot] = field(
+        default_factory=lambda: deque(maxlen=config.TRACK_HISTORY_MAXLEN)
+    )
     _lost_count: int = 0
 
 
@@ -69,15 +82,22 @@ class IoUTracker:
         tracker = IoUTracker()
         for frame_idx, detections, poses in ...:
             tracked = tracker.update(detections, poses, frame_idx)
+
+    ``update`` returns only tracks matched to a detection in the current
+    frame; coasting (recently lost) tracks are retained internally for
+    re-association but never reported, so downstream consumers cannot see
+    ghost persons with stale positions.
     """
 
     def __init__(
         self,
-        iou_threshold: float = config.TRACKER_IOU_THRESHOLD,
-        max_lost: int = config.TRACKER_MAX_LOST,
+        iou_threshold: float | None = None,
+        max_lost: int | None = None,
     ) -> None:
-        self._iou_thresh = iou_threshold
-        self._max_lost = max_lost
+        self._iou_thresh = (
+            iou_threshold if iou_threshold is not None else config.TRACKER_IOU_THRESHOLD
+        )
+        self._max_lost = max_lost if max_lost is not None else config.TRACKER_MAX_LOST
         self._tracks: dict[int, Track] = {}
         self._next_id: int = 1
 
@@ -94,7 +114,7 @@ class IoUTracker:
         """
         Match current detections to existing tracks and update state.
 
-        Also associates the closest pose with each track using bbox IoU.
+        Also associates the closest pose with each matched track using bbox IoU.
 
         Args:
             detections: Person detections for the current frame.
@@ -102,11 +122,11 @@ class IoUTracker:
             frame_index: Sequential frame counter.
 
         Returns:
-            List of active tracks after update.
+            Tracks matched to a detection in this frame (no coasting tracks).
         """
         if not detections:
             self._age_all(frame_index)
-            return list(self._tracks.values())
+            return []
 
         det_boxes = np.array([d.bbox for d in detections], dtype=np.float32)
         det_centroids = [d.centroid for d in detections]
@@ -149,22 +169,32 @@ class IoUTracker:
                 )
                 matched_trk.add(tid)
 
-        # ---- associate poses with tracks ----------------------------------
-        self._associate_poses(poses)
+        # ---- associate poses with tracks matched THIS frame ---------------
+        # Coasting tracks keep a stale bbox; letting them compete here can
+        # attach another person's pose to them, so they are excluded.
+        self._associate_poses(poses, frame_index, matched_trk)
 
         # ---- age unmatched tracks; drop stale ones ------------------------
         self._age_all(frame_index, skip=matched_trk)
 
-        return list(self._tracks.values())
+        return [self._tracks[tid] for tid in matched_trk if tid in self._tracks]
 
     # ------------------------------------------------------------------
-    def _associate_poses(self, poses: Sequence[PoseResult]) -> None:
-        """Match each pose to the best overlapping track by bbox IoU."""
-        if not poses or not self._tracks:
+    def _associate_poses(
+        self,
+        poses: Sequence[PoseResult],
+        frame_index: int,
+        eligible: set[int],
+    ) -> None:
+        """Match each pose to the best overlapping matched track by bbox IoU."""
+        if not poses or not eligible:
+            return
+
+        trk_ids = [tid for tid in self._tracks if tid in eligible]
+        if not trk_ids:
             return
 
         pose_boxes = np.array([p.bbox for p in poses], dtype=np.float32)
-        trk_ids = list(self._tracks.keys())
         trk_boxes = np.array(
             [self._tracks[tid].bbox for tid in trk_ids], dtype=np.float32,
         )
@@ -174,7 +204,13 @@ class IoUTracker:
         for r, c in zip(row_idx, col_idx):
             if iou[r, c] >= self._iou_thresh:
                 tid = trk_ids[c]
-                self._tracks[tid].keypoint_history.append(poses[r].keypoints)
+                self._tracks[tid].keypoint_history.append(
+                    KeypointSnapshot(
+                        frame_index=frame_index,
+                        keypoints=poses[r].keypoints,
+                        scores=poses[r].keypoint_scores,
+                    )
+                )
 
     def _age_all(
         self, frame_index: int, skip: set[int] | None = None,

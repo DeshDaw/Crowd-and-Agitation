@@ -19,7 +19,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-import config
+from . import config
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,22 @@ def build_summary(
         frame_name, people_count, density_ratio, agitation_index, classification
     """
     if not frame_records:
-        return {"total_frames": 0}
+        # Full shape, zero-filled — consumers (summary cards, JSON schema)
+        # rely on every key being present even for an empty batch.
+        return {
+            "total_frames": 0,
+            "mean_density": 0.0,
+            "peak_density_frame": "",
+            "peak_density_value": 0.0,
+            "mean_agitation": 0.0,
+            "highest_agitation_frame": "",
+            "highest_agitation_value": 0.0,
+            "total_escalation_events": events_count,
+            "crowd_classification_distribution": {},
+            "average_crowd_count": 0.0,
+            "std_crowd_count": 0.0,
+            "density_moving_average": [],
+        }
 
     counts = [r["people_count"] for r in frame_records]
     densities = [r["density_ratio"] for r in frame_records]

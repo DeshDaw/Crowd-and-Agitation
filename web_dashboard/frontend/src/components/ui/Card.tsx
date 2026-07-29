@@ -72,12 +72,17 @@ export const CardDescription = ({
 export const CardContent = ({
   children,
   className,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  noPadding: _noPadding,
+  noPadding = false,
 }: {
   children: ReactNode;
   className?: string;
   noPadding?: boolean;
 }) => {
-  return <div className={className}>{children}</div>;
+  // noPadding gives full-bleed content (tables, divided lists) by negating
+  // the parent Card's p-6 inset
+  return (
+    <div className={twMerge(clsx(noPadding && '-mx-6 -mb-6', className))}>
+      {children}
+    </div>
+  );
 };

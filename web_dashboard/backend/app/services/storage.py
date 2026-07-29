@@ -3,21 +3,39 @@ File storage utilities for run isolation.
 """
 
 import json
+import logging
 import os
+import re
 import shutil
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import aiofiles
 
+logger = logging.getLogger(__name__)
+
 # Base directory for all runs
 RUNS_BASE_DIR = Path(__file__).parent.parent.parent / "runs"
 RUNS_BASE_DIR.mkdir(parents=True, exist_ok=True)
 
+# Run IDs are produced by str(uuid4())[:8] — enforce that shape everywhere so
+# path parameters can never traverse out of RUNS_BASE_DIR.
+RUN_ID_PATTERN = r"^[0-9a-f]{8}$"
+_RUN_ID_RE = re.compile(RUN_ID_PATTERN)
+
+
+def validate_run_id(run_id: str) -> str:
+    """Return run_id if it matches the expected shape, else raise ValueError."""
+    if not _RUN_ID_RE.fullmatch(run_id):
+        raise ValueError(f"Invalid run id: {run_id!r}")
+    return run_id
+
 
 def get_run_dir(run_id: str) -> Path:
     """Get the base directory for a specific run."""
+    validate_run_id(run_id)
     return RUNS_BASE_DIR / run_id
 
 
@@ -52,8 +70,17 @@ def create_run_workspace(run_id: str) -> Path:
 def delete_run_workspace(run_id: str) -> bool:
     """Delete a run's workspace. Returns True if deleted."""
     run_dir = get_run_dir(run_id)
+    resolved = run_dir.resolve()
+    base = RUNS_BASE_DIR.resolve()
+    if resolved == base or base not in resolved.parents:
+        logger.error("Refusing to delete path outside runs dir: %s", resolved)
+        return False
     if run_dir.exists():
-        shutil.rmtree(run_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(run_dir)
+        except OSError:
+            logger.exception("Failed to fully delete run workspace %s", run_dir)
+            return False
         return True
     return False
 
@@ -65,13 +92,28 @@ def list_run_ids() -> list[str]:
     return [
         d.name
         for d in RUNS_BASE_DIR.iterdir()
-        if d.is_dir() and not d.name.startswith(".")
+        if d.is_dir() and _RUN_ID_RE.fullmatch(d.name)
     ]
 
 
 # Status file operations
+#
+# status.json is written by the worker thread (per-frame progress), the event
+# loop (upload metadata) and read by pollers. Writes are atomic
+# (tmp + os.replace) and each run's read-modify-write cycle is serialized by a
+# per-run lock so concurrent writers cannot drop keys or expose torn files.
 
 STATUS_FILENAME = "status.json"
+
+_status_locks: dict[str, threading.Lock] = {}
+_status_locks_guard = threading.Lock()
+
+
+def _status_lock(run_id: str) -> threading.Lock:
+    with _status_locks_guard:
+        if run_id not in _status_locks:
+            _status_locks[run_id] = threading.Lock()
+        return _status_locks[run_id]
 
 
 def load_status(run_id: str) -> dict[str, Any] | None:
@@ -87,19 +129,33 @@ def load_status(run_id: str) -> dict[str, Any] | None:
 
 
 def save_status(run_id: str, status: dict[str, Any]) -> None:
-    """Save status JSON for a run."""
+    """Save status JSON for a run atomically."""
     status_path = get_run_dir(run_id) / STATUS_FILENAME
     status_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(status_path, "w", encoding="utf-8") as f:
+    tmp_path = status_path.with_suffix(".json.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(status, f, indent=2, default=str)
+    os.replace(tmp_path, status_path)
 
 
 def update_status(run_id: str, updates: dict[str, Any]) -> dict[str, Any]:
     """Update status with partial data. Returns merged status."""
-    status = load_status(run_id) or {}
-    status.update(updates)
-    save_status(run_id, status)
-    return status
+    with _status_lock(run_id):
+        status = load_status(run_id) or {}
+        status.update(updates)
+        save_status(run_id, status)
+        return status
+
+
+def update_status_progress(run_id: str, progress_updates: dict[str, Any]) -> dict[str, Any]:
+    """Merge updates into the nested progress dict under the run's lock."""
+    with _status_lock(run_id):
+        status = load_status(run_id) or {}
+        progress = status.get("progress", {})
+        progress.update(progress_updates)
+        status["progress"] = progress
+        save_status(run_id, status)
+        return status
 
 
 # Async file operations for uploads
@@ -144,35 +200,35 @@ def discover_output_files(run_id: str) -> dict[str, list[dict[str, Any]]]:
             file_path = root_path / filename
             rel_path = file_path.relative_to(output_dir)
 
-            file_info = {
-                "name": filename,
-                "path": str(rel_path).replace("\\", "/"),
-                "full_path": str(file_path),
-                "size_bytes": file_path.stat().st_size,
-                "modified_at": datetime.fromtimestamp(file_path.stat().st_mtime).isoformat(),
-            }
-
             # Categorize
             ext = file_path.suffix.lower()
             rel_str = str(rel_path).lower()
 
             if ext == ".json":
-                categories["json"].append(file_info)
+                category = "json"
             elif ext in (".db", ".sqlite", ".sqlite3"):
-                categories["database"].append(file_info)
+                category = "database"
             elif ext in (".png", ".jpg", ".jpeg", ".webp", ".bmp"):
                 if "escalation" in rel_str:
-                    categories["escalation"].append(file_info)
-                elif "annotated" in rel_str or "annotated" in str(root_path).lower():
-                    categories["annotated"].append(file_info)
-                elif "heatmap" in rel_str or "heatmap" in str(root_path).lower():
-                    categories["heatmaps"].append(file_info)
+                    category = "escalation"
+                elif "annotated" in rel_str:
+                    category = "annotated"
+                elif "heatmap" in rel_str:
+                    category = "heatmaps"
                 elif "trend" in rel_str or "plot" in rel_str:
-                    categories["plots"].append(file_info)
+                    category = "plots"
                 else:
-                    categories["images"].append(file_info)
+                    category = "images"
             else:
-                categories["other"].append(file_info)
+                category = "other"
+
+            categories[category].append({
+                "name": filename,
+                "path": str(rel_path).replace("\\", "/"),
+                "type": category,
+                "size_bytes": file_path.stat().st_size,
+                "modified_at": datetime.fromtimestamp(file_path.stat().st_mtime).isoformat(),
+            })
 
     return categories
 
@@ -195,6 +251,15 @@ def get_output_file_path(run_id: str, relative_path: str) -> Path | None:
     return None
 
 
+# Maps artifact types to the directory names the pipeline actually writes
+# (create_run_workspace / runner.py). Only escalation uses a "_frames" suffix.
+_ARTIFACT_DIRS = {
+    "annotated": "annotated",
+    "heatmaps": "heatmaps",
+    "escalation": "escalation_frames",
+}
+
+
 def get_artifact_path(run_id: str, artifact_type: str, filename: str | None = None) -> Path | None:
     """Get path for known artifacts by type."""
     output_dir = get_run_output_dir(run_id)
@@ -213,15 +278,19 @@ def get_artifact_path(run_id: str, artifact_type: str, filename: str | None = No
         if path.exists():
             return path
 
-    # For subdirs like annotated, heatmaps, escalation
-    if artifact_type in ("annotated", "heatmaps", "escalation"):
+    if artifact_type in _ARTIFACT_DIRS:
+        dir_path = output_dir / _ARTIFACT_DIRS[artifact_type]
         if filename:
-            path = output_dir / f"{artifact_type}_frames" / filename
+            # Strip any path components so {filename} cannot traverse
+            path = dir_path / Path(filename).name
+            try:
+                path.resolve().relative_to(output_dir.resolve())
+            except ValueError:
+                return None
             if path.exists():
                 return path
-        # Return directory
-        path = output_dir / f"{artifact_type}_frames"
-        if path.exists():
-            return path
+            return None
+        if dir_path.exists():
+            return dir_path
 
     return None

@@ -19,7 +19,7 @@ from typing import Any, Sequence
 
 import numpy as np
 
-import config
+from . import config
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,12 @@ class CrowdDatabase:
         cur.execute(_CREATE_FRAMES)
         cur.execute(_CREATE_PERSONS)
         cur.execute(_CREATE_KEYPOINTS)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_persons_frame ON persons(frame_id)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_keypoints_frame ON keypoints(frame_id)"
+        )
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -108,7 +114,12 @@ class CrowdDatabase:
         Bulk-insert person rows for a frame.
 
         Each dict must have: track_id, motion_score, centroid_x, centroid_y, bbox_area.
+
+        Idempotent per frame: existing rows for *frame_id* are removed first,
+        mirroring the INSERT OR REPLACE semantics of the frames table, so
+        re-running the pipeline does not duplicate person rows.
         """
+        self._conn.execute("DELETE FROM persons WHERE frame_id = ?", (frame_id,))
         self._conn.executemany(
             """INSERT INTO persons
                (frame_id, track_id, motion_score, centroid_x, centroid_y, bbox_area)
@@ -138,7 +149,11 @@ class CrowdDatabase:
             frame_id: Frame that triggered the event.
             track_keypoints: List of (track_id, keypoints_array) where
                              keypoints_array is (17, 2) float32.
+
+        Idempotent per frame: existing keypoint rows for *frame_id* are
+        removed first so re-runs do not duplicate them.
         """
+        self._conn.execute("DELETE FROM keypoints WHERE frame_id = ?", (frame_id,))
         self._conn.executemany(
             """INSERT INTO keypoints (frame_id, track_id, keypoints_json)
                VALUES (?, ?, ?)""",

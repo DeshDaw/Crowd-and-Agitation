@@ -5,7 +5,7 @@ Combines per-frame mean motion, motion variance, directional variance, and
 density-change rate into a single scalar Agitation Index.  After the full
 batch, dynamic thresholds (mean + k·σ) flag frames with abnormal motion.
 
-Weights are configurable in config.py.
+Weights default from config.py and can be overridden per run.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from typing import Sequence
 
 import numpy as np
 
-import config
-from motion_analyzer import PersonMotion
+from . import config
+from .motion_analyzer import PersonMotion
 
 logger = logging.getLogger(__name__)
 
@@ -39,18 +39,28 @@ class AgitationAnalyzer:
 
     def __init__(
         self,
-        w_mean: float = config.AGITATION_W_MEAN_MOTION,
-        w_var: float = config.AGITATION_W_MOTION_VARIANCE,
-        w_dir: float = config.AGITATION_W_DIRECTIONAL_VARIANCE,
-        w_density: float = config.AGITATION_W_DENSITY_CHANGE,
+        w_mean: float | None = None,
+        w_var: float | None = None,
+        w_dir: float | None = None,
+        w_density: float | None = None,
+        threshold_sigma: float | None = None,
     ) -> None:
-        self._w = (w_mean, w_var, w_dir, w_density)
+        self._w = (
+            w_mean if w_mean is not None else config.AGITATION_W_MEAN_MOTION,
+            w_var if w_var is not None else config.AGITATION_W_MOTION_VARIANCE,
+            w_dir if w_dir is not None else config.AGITATION_W_DIRECTIONAL_VARIANCE,
+            w_density if w_density is not None else config.AGITATION_W_DENSITY_CHANGE,
+        )
+        self._threshold_sigma = (
+            threshold_sigma if threshold_sigma is not None
+            else config.AGITATION_THRESHOLD_SIGMA
+        )
 
     def compute_frame(
         self,
         motions: Sequence[PersonMotion],
         current_density: float,
-        previous_density: float,
+        previous_density: float | None,
     ) -> AgitationMetrics:
         """
         Compute Agitation Index for a single frame.
@@ -58,13 +68,19 @@ class AgitationAnalyzer:
         Args:
             motions: PersonMotion list for this frame (may be empty).
             current_density: density_ratio for this frame.
-            previous_density: density_ratio for the preceding frame (0 for first).
+            previous_density: density_ratio for the preceding frame, or None
+                on the first frame (the density-change term is zeroed rather
+                than scored against a fictitious empty scene).
 
         Returns:
             AgitationMetrics.
         """
+        dcr = (
+            abs(current_density - previous_density)
+            if previous_density is not None else 0.0
+        )
+
         if not motions:
-            dcr = abs(current_density - previous_density)
             return AgitationMetrics(
                 mean_motion=0.0,
                 motion_variance=0.0,
@@ -79,8 +95,6 @@ class AgitationAnalyzer:
 
         # Directional variance: angular variance of velocity vectors
         dir_var = self._directional_variance(motions)
-
-        dcr = abs(current_density - previous_density)
 
         ai = (
             self._w[0] * mean_motion
@@ -100,16 +114,23 @@ class AgitationAnalyzer:
     def compute_batch_threshold(
         self,
         agitation_list: Sequence[AgitationMetrics],
-        sigma_mult: float = config.AGITATION_THRESHOLD_SIGMA,
+        sigma_mult: float | None = None,
     ) -> tuple[float, float, float]:
         """
         After full batch, compute mean, std, and threshold for agitation.
+
+        Note: this threshold is batch-relative (self-referential) — it flags
+        the batch's own statistical outliers, not absolute agitation. Suitable
+        for offline review; a live deployment needs a rolling/absolute
+        threshold instead.
 
         Returns:
             (mean_agitation, std_agitation, threshold)
         """
         if not agitation_list:
             return 0.0, 0.0, 0.0
+        if sigma_mult is None:
+            sigma_mult = self._threshold_sigma
         vals = np.array([a.agitation_index for a in agitation_list])
         mu = float(vals.mean())
         sigma = float(vals.std()) if len(vals) > 1 else 0.0

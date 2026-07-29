@@ -40,11 +40,16 @@ export const useRunsStore = create<RunsStore>((set) => ({
 
   setCurrentRun: (run) => set({ currentRun: run }),
 
+  // Upsert keyed by run_id: a status for a run we are not currently holding
+  // (deep link, refresh, click-through from the Dashboard) replaces the
+  // current run instead of being silently dropped or merged into the wrong
+  // run's record.
   updateCurrentStatus: (status) =>
     set((state) => ({
-      currentRun: state.currentRun
-        ? { ...state.currentRun, status }
-        : null,
+      currentRun:
+        state.currentRun && state.currentRun.runId === status.run_id
+          ? { ...state.currentRun, status }
+          : { runId: status.run_id, status, isPolling: false, error: null },
     })),
 
   setPolling: (isPolling) =>

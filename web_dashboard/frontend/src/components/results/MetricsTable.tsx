@@ -35,9 +35,10 @@ export const MetricsTable = ({ metrics, eventFrameNames }: MetricsTableProps) =>
     });
   }, [metrics, search, classificationFilter, minPeople, maxPeople, onlyEvents, eventFrameNames]);
 
-  // Paginate
-  const totalPages = Math.ceil(filtered.length / pageSize);
-  const paginated = filtered.slice((page - 1) * pageSize, page * pageSize);
+  // Paginate (min 1 page so an empty filter result can't drive page to 0)
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const paginated = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
 
   const getClassificationColor = (classification: string) => {
     switch (classification) {
@@ -123,7 +124,7 @@ export const MetricsTable = ({ metrics, eventFrameNames }: MetricsTableProps) =>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">{m.people_count}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
-                    {(m.density_ratio * 100).toFixed(2)}%
+                    {m.density_ratio.toFixed(3)}×
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
                     {m.agitation_index.toFixed(4)}
@@ -148,22 +149,22 @@ export const MetricsTable = ({ metrics, eventFrameNames }: MetricsTableProps) =>
         {/* Pagination */}
         <div className="flex items-center justify-between px-6 py-4 border-t">
           <span className="text-sm text-slate-500">
-            Page {page} of {totalPages}
+            Page {safePage} of {totalPages}
           </span>
           <div className="flex gap-2">
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => setPage(p => Math.max(1, p - 1))}
-              disabled={page === 1}
+              onClick={() => setPage(Math.max(1, safePage - 1))}
+              disabled={safePage <= 1}
             >
               <ChevronLeft className="h-4 w-4" />
             </Button>
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-              disabled={page === totalPages}
+              onClick={() => setPage(Math.min(totalPages, safePage + 1))}
+              disabled={safePage >= totalPages}
             >
               <ChevronRight className="h-4 w-4" />
             </Button>

@@ -22,22 +22,32 @@ export const ProgressMonitor = ({ status, onCancel }: ProgressMonitorProps) => {
     ? (progress.processed_frames / progress.total_frames) * 100
     : 0;
 
-  // Calculate elapsed time
+  // Elapsed time: live ticking only while the run is active; a finished run
+  // shows its fixed duration (started_at -> finished_at), not wall clock.
   useEffect(() => {
     if (!status.started_at) return;
+    const start = new Date(status.started_at).getTime();
 
-    const interval = setInterval(() => {
-      const start = new Date(status.started_at!).getTime();
-      const now = Date.now();
-      setElapsed(Math.floor((now - start) / 1000));
-    }, 1000);
+    if (status.finished_at) {
+      setElapsed(
+        Math.max(0, Math.floor((new Date(status.finished_at).getTime() - start) / 1000))
+      );
+      return;
+    }
 
+    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+    tick();
+    const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [status.started_at]);
+  }, [status.started_at, status.finished_at]);
 
   const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
     const secs = seconds % 60;
+    if (hours > 0) {
+      return `${hours}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
@@ -107,12 +117,23 @@ export const ProgressMonitor = ({ status, onCancel }: ProgressMonitorProps) => {
           />
         </div>
 
+        {/* Stage message (e.g. video extraction, before total_frames is known) */}
+        {progress.message && (
+          <div className="flex items-center gap-2 p-3 bg-slate-50 rounded-md">
+            <Activity className="h-5 w-5 text-slate-400" />
+            <span className="text-sm text-slate-600">{progress.message}</span>
+          </div>
+        )}
+
         {/* Current Frame */}
         {progress.current_frame && (
           <div className="flex items-center gap-2 p-3 bg-slate-50 rounded-md">
             <FileImage className="h-5 w-5 text-slate-400" />
             <span className="text-sm text-slate-600">
               Current: <span className="font-medium text-slate-900">{progress.current_frame}</span>
+              {typeof progress.eta_seconds === 'number' && isRunning && (
+                <span className="text-slate-400"> · ETA {formatTime(progress.eta_seconds)}</span>
+              )}
             </span>
           </div>
         )}
@@ -133,7 +154,7 @@ export const ProgressMonitor = ({ status, onCancel }: ProgressMonitorProps) => {
               <span className="text-xs">Stage</span>
             </div>
             <span className="text-sm font-medium capitalize">
-              {progress.current_stage || 'Idle'}
+              {(progress.current_stage || 'Idle').replace(/_/g, ' ')}
             </span>
           </div>
 

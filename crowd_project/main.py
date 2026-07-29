@@ -19,29 +19,49 @@ Usage:
 
 from __future__ import annotations
 
+# Allow running both as a module (python -m crowd_project.main) and as a
+# script (python main.py) — the script path needs the parent directory on
+# sys.path and an explicit package name before the relative imports below.
+if __package__ in (None, ""):
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    # Resolve detectron2 BEFORE the repo root goes on sys.path: the vendored
+    # detectron2/ clone at the repo root would otherwise shadow the editable
+    # install as an empty namespace package (PEP 660 finder loses to
+    # PathFinder's namespace fallback).
+    try:
+        import detectron2  # noqa: F401
+    except ImportError:
+        pass
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+    __package__ = "crowd_project"
+
 import argparse
 import logging
 import sys
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 from tqdm import tqdm
 
-import analytics
-import config
-from agitation_analyzer import AgitationAnalyzer, AgitationMetrics
-from database import CrowdDatabase
-from density_analyzer import DensityAnalyzer, DensityMetrics
-from detection_engine import Detection, DetectionEngine
-from event_manager import EventManager
-from heatmap import generate_heatmap_visualization
-from model_registry import ModelRegistry
-from motion_analyzer import MotionAnalyzer, PersonMotion
-from pose_engine import PoseEngine
-from tracker import IoUTracker, Track
-from video_utils import extract_frames_from_video, get_image_paths, load_image
+from . import analytics, config
+from .agitation_analyzer import AgitationAnalyzer, AgitationMetrics
+from .database import CrowdDatabase
+from .density_analyzer import DensityAnalyzer, DensityMetrics
+from .detection_engine import Detection, DetectionEngine
+from .event_manager import EventManager
+from .heatmap import generate_heatmap_visualization
+from .model_registry import ModelRegistry
+from .motion_analyzer import MotionAnalyzer
+from .pose_engine import PoseEngine
+from .settings import PipelineSettings
+from .tracker import IoUTracker
+from .video_utils import extract_frames_from_video, get_image_paths, load_image
+
+import cv2
 
 # ── logging ──────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -71,32 +91,65 @@ class FrameProcessor:
         ├── AgitationAnalyzer (behavioral)
         └── EventManager      (escalation)
 
-    Each engine:
-      - Receives a frame (or derived data).
-      - Returns structured output.
-      - Has no side effects outside its own domain.
+    All tunables come from a :class:`PipelineSettings` instance resolved at
+    construction time, so per-run overrides reach every component and no
+    module-global state is mutated.
 
-    FrameProcessor merges outputs and manages batch-level post-processing.
+    Annotated and heatmap images are written to disk as each frame is
+    processed; frame records carry only their paths, keeping memory usage
+    flat regardless of batch length.
     """
 
-    def __init__(self, device: str | None = None) -> None:
-        dev = (device or config.DEVICE).lower()
-        logger.info("Initializing FrameProcessor (device=%s)", dev)
+    def __init__(
+        self,
+        settings: PipelineSettings | None = None,
+        device: str | None = None,
+    ) -> None:
+        s = settings or PipelineSettings()
+        if device is not None:
+            s.device = device.lower()
+        self.settings = s
+        logger.info("Initializing FrameProcessor (device=%s)", s.device)
 
-        self._registry = ModelRegistry(device=dev)
-        self.detection_engine = DetectionEngine(self._registry)
-        self.pose_engine = PoseEngine(self._registry)
-        self.tracker = IoUTracker()
+        self._registry = ModelRegistry(
+            device=s.device,
+            confidence_threshold=s.confidence_threshold,
+            pose_confidence_threshold=s.pose_confidence_threshold,
+        )
+        self.detection_engine = DetectionEngine(
+            self._registry, max_inference_width=s.max_inference_width,
+        )
+        self.pose_engine = PoseEngine(
+            self._registry, max_inference_width=s.max_inference_width,
+        )
+        self.tracker = IoUTracker(
+            iou_threshold=s.tracker_iou_threshold,
+            max_lost=s.tracker_max_lost,
+        )
         self.density_analyzer = DensityAnalyzer()
-        self.motion_analyzer = MotionAnalyzer()
-        self.agitation_analyzer = AgitationAnalyzer()
-        self.event_manager = EventManager()
+        self.motion_analyzer = MotionAnalyzer(
+            vis_thresh=s.keypoint_visibility_thresh,
+            min_valid_keypoints=s.min_valid_keypoints,
+        )
+        self.agitation_analyzer = AgitationAnalyzer(
+            w_mean=s.agitation_w_mean_motion,
+            w_var=s.agitation_w_motion_variance,
+            w_dir=s.agitation_w_directional_variance,
+            w_density=s.agitation_w_density_change,
+            threshold_sigma=s.agitation_threshold_sigma,
+        )
+        self.event_manager = EventManager(output_dir=s.output_dir)
+
+        if s.save_annotated:
+            s.annotated_dir.mkdir(parents=True, exist_ok=True)
+        if s.save_heatmaps:
+            s.heatmaps_dir.mkdir(parents=True, exist_ok=True)
 
         # batch accumulators (reset on each run)
         self._frame_records: list[dict[str, Any]] = []
         self._density_list: list[DensityMetrics] = []
         self._agitation_list: list[AgitationMetrics] = []
-        self._prev_density: float = 0.0
+        self._prev_density: float | None = None
 
     # ------------------------------------------------------------------
     # Per-frame inference (Pass 1)
@@ -120,6 +173,7 @@ class FrameProcessor:
             6. Agitation  (behavioral — computed, not yet classified)
         """
         h, w = image.shape[:2]
+        s = self.settings
 
         # 1. Detection
         detections, det_time = self.detection_engine.detect(image, resize=True)
@@ -127,7 +181,7 @@ class FrameProcessor:
         # 2. Pose
         poses, pose_time = self.pose_engine.extract(image, resize=True)
 
-        # 3. Tracking
+        # 3. Tracking (returns only tracks matched in this frame)
         active_tracks = self.tracker.update(detections, poses, frame_index)
 
         # 4. Density
@@ -135,7 +189,9 @@ class FrameProcessor:
         self._density_list.append(density)
 
         # 5. Motion
-        motions = self.motion_analyzer.compute_person_motions(active_tracks)
+        motions = self.motion_analyzer.compute_person_motions(
+            active_tracks, frame_index,
+        )
 
         # 6. Agitation (frame-level)
         agitation = self.agitation_analyzer.compute_frame(
@@ -149,6 +205,7 @@ class FrameProcessor:
             m.track_id: m.normalized_motion for m in motions
         }
         person_rows: list[dict[str, Any]] = []
+        keypoint_snapshots: dict[int, np.ndarray] = {}
         for trk in active_tracks:
             person_rows.append({
                 "track_id": trk.track_id,
@@ -159,17 +216,33 @@ class FrameProcessor:
                     (trk.bbox[2] - trk.bbox[0]) * (trk.bbox[3] - trk.bbox[1])
                 ),
             })
+            if (
+                trk.keypoint_history
+                and trk.keypoint_history[-1].frame_index == frame_index
+            ):
+                keypoint_snapshots[trk.track_id] = trk.keypoint_history[-1].keypoints
 
-        # -- Annotated + heatmap images ------------------------------------
-        annotated = self.detection_engine.draw_boxes(image, detections)
-        _, heatmap_overlay = generate_heatmap_visualization(
-            image,
-            _det_boxes(detections),
-            downscale=config.HEATMAP_DOWNSCALE,
-            sigma=config.HEATMAP_SIGMA,
-            colormap=config.HEATMAP_COLORMAP,
-            alpha=config.HEATMAP_ALPHA,
-        )
+        # -- Annotated + heatmap images: write immediately, keep paths -----
+        annotated_path: Path | None = None
+        heatmap_path: Path | None = None
+
+        if s.save_annotated:
+            annotated = self.detection_engine.draw_boxes(image, detections)
+            annotated_path = s.annotated_dir / frame_name
+            cv2.imwrite(str(annotated_path), annotated)
+
+        if s.save_heatmaps:
+            _, heatmap_overlay = generate_heatmap_visualization(
+                image,
+                _det_boxes(detections),
+                downscale=s.heatmap_downscale,
+                sigma=s.heatmap_sigma,
+                colormap=s.heatmap_colormap,
+                alpha=s.heatmap_alpha,
+            )
+            p = Path(frame_name)
+            heatmap_path = s.heatmaps_dir / f"{p.stem}_heatmap{p.suffix}"
+            cv2.imwrite(str(heatmap_path), heatmap_overlay)
 
         avg_conf = (
             sum(d.confidence for d in detections) / len(detections)
@@ -187,9 +260,9 @@ class FrameProcessor:
             "agitation_index": agitation.agitation_index,
             "classification": "",               # set in batch post-processing
             "person_rows": person_rows,
-            "active_tracks": active_tracks,
-            "annotated_image": annotated,
-            "heatmap_overlay": heatmap_overlay,
+            "keypoint_snapshots": keypoint_snapshots,
+            "annotated_path": str(annotated_path) if annotated_path else None,
+            "heatmap_path": str(heatmap_path) if heatmap_path else None,
         }
         self._frame_records.append(record)
         return record
@@ -205,8 +278,16 @@ class FrameProcessor:
         Returns:
             (mean_agitation, std_agitation, agitation_threshold)
         """
+        s = self.settings
+
         # Density classification (modifies DensityMetrics in-place)
-        self.density_analyzer.classify_batch(self._density_list)
+        self.density_analyzer.classify_batch(
+            self._density_list,
+            low_sigma=s.density_low_sigma,
+            high_sigma=s.density_high_sigma,
+            high_min_ratio=s.density_high_min_ratio,
+            low_max_ratio=s.density_low_max_ratio,
+        )
 
         # Agitation threshold
         mu_ag, std_ag, ag_threshold = (
@@ -239,7 +320,7 @@ class FrameProcessor:
                 agitation_threshold=ag_threshold,
                 density_classification=rec["classification"],
                 density_ratio=rec["density_ratio"],
-                annotated_image=rec.get("annotated_image"),
+                annotated_path=rec.get("annotated_path"),
             )
             if event is not None and db is not None:
                 self._store_escalation_keypoints(db, rec)
@@ -258,11 +339,8 @@ class FrameProcessor:
         rec: dict[str, Any],
     ) -> None:
         """Persist raw keypoints for an escalation-event frame."""
-        tracks: list[Track] = rec.get("active_tracks", [])
-        pairs: list[tuple[int, np.ndarray]] = []
-        for trk in tracks:
-            if trk.keypoint_history:
-                pairs.append((trk.track_id, trk.keypoint_history[-1]))
+        snapshots: dict[int, np.ndarray] = rec.get("keypoint_snapshots", {})
+        pairs = [(tid, kps) for tid, kps in snapshots.items()]
         if pairs:
             db.insert_keypoints(rec["frame_name"], pairs)
 
@@ -282,11 +360,12 @@ def _det_boxes(detections: list[Detection]) -> np.ndarray:
 # run_pipeline — end-to-end batch execution
 # =====================================================================
 
-def run_pipeline(input_dir: Path) -> None:
+def run_pipeline(
+    input_dir: Path,
+    settings: PipelineSettings | None = None,
+) -> None:
     """Full batch: process all frames -> classify -> events -> persist -> report."""
-    # Ensure output dirs
-    config.OUTPUT_ANNOTATED_DIR.mkdir(parents=True, exist_ok=True)
-    config.OUTPUT_HEATMAPS_DIR.mkdir(parents=True, exist_ok=True)
+    s = settings or PipelineSettings()
 
     image_paths = get_image_paths(input_dir)
     if not image_paths:
@@ -294,27 +373,15 @@ def run_pipeline(input_dir: Path) -> None:
         return
 
     # -- Build processor + storage -----------------------------------------
-    processor = FrameProcessor(device=config.DEVICE)
-    db = CrowdDatabase()
+    processor = FrameProcessor(settings=s)
+    db = CrowdDatabase(s.output_dir / config.DATABASE_FILE)
 
-    # -- Pass 1: per-frame inference ---------------------------------------
+    # -- Pass 1: per-frame inference (images written inside process_frame) --
     for idx, path in enumerate(tqdm(image_paths, desc="Processing frames", unit="frame")):
         image = load_image(path)
         if image is None:
             continue
-
-        rec = processor.process_frame(image, path.name, idx)
-
-        # Save annotated + heatmap immediately (keeps memory bounded)
-        cv2.imwrite(
-            str(config.OUTPUT_ANNOTATED_DIR / rec["frame_name"]),
-            rec["annotated_image"],
-        )
-        hm_name = path.stem + "_heatmap" + path.suffix
-        cv2.imwrite(
-            str(config.OUTPUT_HEATMAPS_DIR / hm_name),
-            rec["heatmap_overlay"],
-        )
+        processor.process_frame(image, path.name, idx)
 
     records = processor.frame_records
     if not records:
@@ -344,15 +411,16 @@ def run_pipeline(input_dir: Path) -> None:
     # -- JSON outputs ------------------------------------------------------
     metrics_rows = [
         {k: v for k, v in r.items()
-         if k not in ("person_rows", "annotated_image", "heatmap_overlay", "active_tracks")}
+         if k not in ("person_rows", "keypoint_snapshots",
+                      "annotated_path", "heatmap_path")}
         for r in records
     ]
-    analytics.save_json(metrics_rows, config.OUTPUT_DIR / config.METRICS_JSON)
+    analytics.save_json(metrics_rows, s.output_dir / config.METRICS_JSON)
 
     summary = analytics.build_summary(
         records, len(processor.event_manager.events),
     )
-    analytics.save_json(summary, config.OUTPUT_DIR / config.SUMMARY_JSON)
+    analytics.save_json(summary, s.output_dir / config.SUMMARY_JSON)
 
     processor.event_manager.save_events_json()
 
@@ -364,22 +432,26 @@ def run_pipeline(input_dir: Path) -> None:
 
     analytics.plot_density_trend(
         names, density_vals, class_vals,
-        config.OUTPUT_DIR / config.CROWD_DENSITY_TREND_PNG,
+        s.output_dir / config.CROWD_DENSITY_TREND_PNG,
     )
     analytics.plot_agitation_trend(
         names, agitation_vals, ag_threshold,
-        config.OUTPUT_DIR / config.AGITATION_TREND_PNG,
+        s.output_dir / config.AGITATION_TREND_PNG,
     )
 
     # -- Console report ----------------------------------------------------
-    _print_report(summary, ag_threshold)
+    _print_report(summary, ag_threshold, s)
 
 
 # =====================================================================
 # Console report
 # =====================================================================
 
-def _print_report(summary: dict[str, Any], ag_threshold: float) -> None:
+def _print_report(
+    summary: dict[str, Any],
+    ag_threshold: float,
+    s: PipelineSettings,
+) -> None:
     w = 62
     print("\n" + "=" * w)
     print("  CROWD INTELLIGENCE SYSTEM - BATCH REPORT")
@@ -401,9 +473,9 @@ def _print_report(summary: dict[str, Any], ag_threshold: float) -> None:
         print(f"    {cls:20s} : {cnt}")
     print("-" * w)
     print("  Outputs:")
-    print(f"    Annotated frames  : {config.OUTPUT_ANNOTATED_DIR}")
-    print(f"    Heatmaps          : {config.OUTPUT_HEATMAPS_DIR}")
-    print(f"    Escalation frames : {config.OUTPUT_ESCALATION_DIR}")
+    print(f"    Annotated frames  : {s.annotated_dir}")
+    print(f"    Heatmaps          : {s.heatmaps_dir}")
+    print(f"    Escalation frames : {s.escalation_dir}")
     print(f"    {config.METRICS_JSON}")
     print(f"    {config.SUMMARY_JSON}")
     print(f"    {config.EVENTS_JSON}")
@@ -429,6 +501,10 @@ def main() -> None:
         "--input-dir", type=Path, default=None,
         help="Folder of images to process (default: config.INPUT_IMAGES_DIR).",
     )
+    parser.add_argument(
+        "--device", type=str, default=None,
+        help="Inference device (cpu/cuda). Default: config.DEVICE.",
+    )
     args = parser.parse_args()
 
     input_dir: Path = args.input_dir or config.INPUT_IMAGES_DIR
@@ -441,10 +517,14 @@ def main() -> None:
         extract_frames_from_video(args.video, frames_dir, fps=config.VIDEO_EXTRACT_FPS)
         input_dir = frames_dir
 
-    logger.info("Device : %s", config.DEVICE)
+    settings = PipelineSettings()
+    if args.device:
+        settings.device = args.device.lower()
+
+    logger.info("Device : %s", settings.device)
     logger.info("Input  : %s", input_dir)
 
-    run_pipeline(input_dir)
+    run_pipeline(input_dir, settings=settings)
 
 
 if __name__ == "__main__":
