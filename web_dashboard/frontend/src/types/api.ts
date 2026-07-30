@@ -120,6 +120,11 @@ export interface FrameMetrics {
   mean_speed?: number | null;
   speed_std?: number | null;
   speed_unit?: string | null;
+  crowd_pressure?: number | null;
+  velocity_variance?: number | null;
+  directional_entropy?: number | null;
+  accel_event_rate?: number | null;
+  crowd_state?: string | null;
   inference_time_det: number;
   inference_time_pose: number;
   average_confidence: number;
@@ -137,6 +142,11 @@ export interface SummaryStats {
   worst_los?: string | null;
   mean_speed?: number | null;
   speed_unit?: string | null;
+  crowd_state_distribution?: Record<string, number>;
+  dominant_state?: string;
+  mean_crowd_pressure?: number;
+  peak_crowd_pressure?: number;
+  state_classifier?: string | null;
   mean_density: number;
   peak_density_frame: string;
   peak_density_value: number;
