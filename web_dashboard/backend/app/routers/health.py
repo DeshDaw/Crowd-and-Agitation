@@ -34,14 +34,28 @@ try:
 except ImportError:
     pass
 
+ULTRALYTICS_AVAILABLE = False
+try:
+    import ultralytics  # noqa: F401
+
+    ULTRALYTICS_AVAILABLE = True
+except ImportError:
+    pass
+
 
 @router.get("", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
     """Health check endpoint."""
+    backends = []
+    if DETECTRON2_AVAILABLE:
+        backends.append("detectron2")
+    if ULTRALYTICS_AVAILABLE:
+        backends.append("yolo")
     return HealthResponse(
         status="healthy",
         device_available=DEVICE_AVAILABLE,
         cuda_available=CUDA_AVAILABLE,
+        backends_available=backends,
     )
 
 
@@ -55,6 +69,7 @@ async def detailed_health() -> dict:
             "torch": DEVICE_AVAILABLE,
             "cuda_available": CUDA_AVAILABLE,
             "detectron2": "ok" if DETECTRON2_AVAILABLE else "not_available",
+            "yolo": "ok" if ULTRALYTICS_AVAILABLE else "not_available",
         },
         "version": "1.0.0",
     }

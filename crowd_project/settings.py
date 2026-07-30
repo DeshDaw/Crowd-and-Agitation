@@ -23,9 +23,17 @@ class PipelineSettings:
 
     # Device / models
     device: str = config.DEVICE
+    detection_backend: str = config.DETECTION_BACKEND
     confidence_threshold: float = config.CONFIDENCE_THRESHOLD
     pose_confidence_threshold: float = config.POSE_CONFIDENCE_THRESHOLD
     max_inference_width: int = config.MAX_INFERENCE_WIDTH
+
+    # YOLO backend
+    yolo_weights: str = config.YOLO_WEIGHTS
+    yolo_conf: float = config.YOLO_CONF
+    yolo_imgsz: int = config.YOLO_IMGSZ
+    yolo_tracker: str = config.YOLO_TRACKER
+    yolo_keypoint_conf: float = config.YOLO_KEYPOINT_CONF
 
     # Tracking
     tracker_iou_threshold: float = config.TRACKER_IOU_THRESHOLD

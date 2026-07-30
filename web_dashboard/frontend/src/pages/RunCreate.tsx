@@ -22,6 +22,7 @@ export const RunCreate = () => {
   const [runId, setRunId] = useState<string | null>(null);
   const [config, setConfig] = useState<Partial<RunConfig>>({
     device: 'cpu',
+    detection_backend: 'yolo',
     confidence_threshold: 0.5,
     pose_confidence_threshold: 0.5,
     max_inference_width: 960,
@@ -36,11 +37,31 @@ export const RunCreate = () => {
     save_database: true,
   });
   const [cudaAvailable, setCudaAvailable] = useState(false);
+  // Optimistic until the health check reports otherwise, so a failed health
+  // call never mislabels the pre-selected default as "not installed"
+  const [backendsAvailable, setBackendsAvailable] = useState<string[]>([
+    'detectron2',
+    'yolo',
+  ]);
   const [error, setError] = useState<string | null>(null);
 
-  // Check CUDA availability
+  // Check CUDA + backend availability
   useEffect(() => {
-    runsApi.health().then((h) => setCudaAvailable(h.cuda_available)).catch(() => {});
+    runsApi
+      .health()
+      .then((h) => {
+        setCudaAvailable(h.cuda_available);
+        if (h.backends_available?.length) {
+          setBackendsAvailable(h.backends_available);
+          // Fall back if the preferred default backend is not installed
+          if (!h.backends_available.includes('yolo')) {
+            const fallback: RunConfig['detection_backend'] =
+              h.backends_available.includes('detectron2') ? 'detectron2' : 'yolo';
+            setConfig((c) => ({ ...c, detection_backend: fallback }));
+          }
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // Entering the upload step must always leave it usable (progress reset)
@@ -147,6 +168,7 @@ export const RunCreate = () => {
               config={config}
               onChange={setConfig}
               cudaAvailable={cudaAvailable}
+              backendsAvailable={backendsAvailable}
             />
 
             <div className="flex justify-end gap-4">

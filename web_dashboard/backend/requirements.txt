@@ -16,3 +16,8 @@ torchvision==0.16.2
 
 # Detectron2 must be built from source (needs C++ build tools):
 #   pip install "git+https://github.com/facebookresearch/detectron2.git@fd27788"
+
+# Phase II - YOLO backend (optional)
+ultralytics>=8.4
+lapx>=0.5
+onnxruntime>=1.17

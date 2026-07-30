@@ -50,3 +50,9 @@ prompt.txt
 *.db
 *.sqlite
 *.sqlite3
+
+# Model weights
+*.pt
+*.onnx
+crowd_project/models/
+crowd_project/output_yolo/

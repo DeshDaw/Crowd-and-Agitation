@@ -13,6 +13,7 @@ export type RunState =
 
 export interface RunConfig {
   device: string;
+  detection_backend: 'detectron2' | 'yolo';
   confidence_threshold: number;
   pose_confidence_threshold: number;
   max_inference_width: number;
@@ -87,6 +88,7 @@ export interface HealthResponse {
   status: string;
   device_available: string;
   cuda_available: boolean;
+  backends_available: string[];
   version: string;
 }
 

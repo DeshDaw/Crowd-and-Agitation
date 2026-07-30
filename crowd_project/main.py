@@ -109,26 +109,52 @@ class FrameProcessor:
         if device is not None:
             s.device = device.lower()
         self.settings = s
-        logger.info("Initializing FrameProcessor (device=%s)", s.device)
+        self.backend = s.detection_backend.lower()
+        logger.info(
+            "Initializing FrameProcessor (backend=%s, device=%s)",
+            self.backend, s.device,
+        )
 
-        self._registry = ModelRegistry(
-            device=s.device,
-            confidence_threshold=s.confidence_threshold,
-            pose_confidence_threshold=s.pose_confidence_threshold,
-        )
-        self.detection_engine = DetectionEngine(
-            self._registry, max_inference_width=s.max_inference_width,
-        )
-        self.pose_engine = PoseEngine(
-            self._registry, max_inference_width=s.max_inference_width,
-        )
-        self.tracker = IoUTracker(
-            iou_threshold=s.tracker_iou_threshold,
-            max_lost=s.tracker_max_lost,
-        )
+        if self.backend == "yolo":
+            # Single-pass detection + tracking + pose. YOLO keypoint
+            # confidences are probabilities, so motion gating uses the
+            # YOLO-specific threshold instead of the R-CNN logit threshold.
+            from .yolo_engine import YoloEngine
+            self.yolo_engine = YoloEngine(
+                weights=s.yolo_weights,
+                device=s.device,
+                conf=s.yolo_conf,
+                imgsz=s.yolo_imgsz,
+                tracker_type=s.yolo_tracker,
+                max_lost=s.tracker_max_lost,
+            )
+            motion_vis_thresh = s.yolo_keypoint_conf
+        elif self.backend == "detectron2":
+            self._registry = ModelRegistry(
+                device=s.device,
+                confidence_threshold=s.confidence_threshold,
+                pose_confidence_threshold=s.pose_confidence_threshold,
+            )
+            self.detection_engine = DetectionEngine(
+                self._registry, max_inference_width=s.max_inference_width,
+            )
+            self.pose_engine = PoseEngine(
+                self._registry, max_inference_width=s.max_inference_width,
+            )
+            self.tracker = IoUTracker(
+                iou_threshold=s.tracker_iou_threshold,
+                max_lost=s.tracker_max_lost,
+            )
+            motion_vis_thresh = s.keypoint_visibility_thresh
+        else:
+            raise ValueError(
+                f"Unknown detection backend {s.detection_backend!r} "
+                "(expected 'detectron2' or 'yolo')"
+            )
+
         self.density_analyzer = DensityAnalyzer()
         self.motion_analyzer = MotionAnalyzer(
-            vis_thresh=s.keypoint_visibility_thresh,
+            vis_thresh=motion_vis_thresh,
             min_valid_keypoints=s.min_valid_keypoints,
         )
         self.agitation_analyzer = AgitationAnalyzer(
@@ -175,14 +201,21 @@ class FrameProcessor:
         h, w = image.shape[:2]
         s = self.settings
 
-        # 1. Detection
-        detections, det_time = self.detection_engine.detect(image, resize=True)
+        if self.backend == "yolo":
+            # 1-3. Detection + tracking + pose in a single pass
+            detections, active_tracks, det_time = self.yolo_engine.process(
+                image, frame_index,
+            )
+            pose_time = 0.0
+        else:
+            # 1. Detection
+            detections, det_time = self.detection_engine.detect(image, resize=True)
 
-        # 2. Pose
-        poses, pose_time = self.pose_engine.extract(image, resize=True)
+            # 2. Pose
+            poses, pose_time = self.pose_engine.extract(image, resize=True)
 
-        # 3. Tracking (returns only tracks matched in this frame)
-        active_tracks = self.tracker.update(detections, poses, frame_index)
+            # 3. Tracking (returns only tracks matched in this frame)
+            active_tracks = self.tracker.update(detections, poses, frame_index)
 
         # 4. Density
         density = self.density_analyzer.analyze_frame(detections, (h, w))
@@ -227,7 +260,7 @@ class FrameProcessor:
         heatmap_path: Path | None = None
 
         if s.save_annotated:
-            annotated = self.detection_engine.draw_boxes(image, detections)
+            annotated = DetectionEngine.draw_boxes(image, detections)
             annotated_path = s.annotated_dir / frame_name
             cv2.imwrite(str(annotated_path), annotated)
 
@@ -505,6 +538,14 @@ def main() -> None:
         "--device", type=str, default=None,
         help="Inference device (cpu/cuda). Default: config.DEVICE.",
     )
+    parser.add_argument(
+        "--backend", type=str, default=None, choices=["detectron2", "yolo"],
+        help="Detection backend. Default: config.DETECTION_BACKEND (env CROWD_BACKEND).",
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, default=None,
+        help="Output directory (default: crowd_project/output).",
+    )
     args = parser.parse_args()
 
     input_dir: Path = args.input_dir or config.INPUT_IMAGES_DIR
@@ -520,7 +561,12 @@ def main() -> None:
     settings = PipelineSettings()
     if args.device:
         settings.device = args.device.lower()
+    if args.backend:
+        settings.detection_backend = args.backend.lower()
+    if args.output_dir:
+        settings.output_dir = args.output_dir
 
+    logger.info("Backend: %s", settings.detection_backend)
     logger.info("Device : %s", settings.device)
     logger.info("Input  : %s", input_dir)
 

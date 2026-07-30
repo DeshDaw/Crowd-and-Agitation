@@ -25,6 +25,11 @@ class RunConfig(BaseModel):
     """Configuration overrides for a processing run."""
 
     device: str = Field(default="cpu", description="Device for inference: cpu or cuda")
+    detection_backend: str = Field(
+        default="detectron2",
+        pattern="^(detectron2|yolo)$",
+        description="Detection backend: detectron2 (Phase I baseline) or yolo (Phase II)",
+    )
     confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     pose_confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     max_inference_width: int = Field(default=960, ge=320, le=2048)
@@ -117,6 +122,7 @@ class HealthResponse(BaseModel):
     status: str
     device_available: str
     cuda_available: bool
+    backends_available: list[str] = Field(default_factory=list)
     version: str = "1.0.0"
 
 

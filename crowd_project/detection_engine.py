@@ -98,8 +98,8 @@ class DetectionEngine:
         detections = self._parse(instances, inv_scale)
         return detections, inference_time
 
+    @staticmethod
     def draw_boxes(
-        self,
         image: np.ndarray,
         detections: Sequence[Detection],
         color: tuple[int, int, int] = (0, 255, 0),

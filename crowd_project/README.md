@@ -72,11 +72,30 @@ crowd_project/
    ```
    (or `pip install -r requirements.txt`)
 
+## Detection backends
+
+Two interchangeable backends, selected via `--backend`, `CROWD_BACKEND`, or the dashboard run form:
+
+| | `detectron2` (Phase I baseline) | `yolo` (Phase II) |
+|---|---|---|
+| Models | Faster R-CNN + Keypoint R-CNN (two passes) | YOLO11-pose, single pass |
+| Tracking | IoU + Hungarian (`tracker.py`) | ByteTrack / BoT-SORT (`model.track`) |
+| CPU speed (sample images) | ~10.5 s/frame | ~0.17 s/frame (~62× faster) |
+| Dense-crowd recall | higher (R-CNN, 960 px) | lower with nano weights — CrowdHuman fine-tune planned |
+| Keypoint gating | `KEYPOINT_VISIBILITY_THRESH` (logits) | `YOLO_KEYPOINT_CONF` (probabilities) |
+
+YOLO weights auto-download to `crowd_project/models/` on first use (`YOLO_WEIGHTS`, default `yolo11n-pose.pt`; use `yolo11s-pose.pt` for better dense-crowd counts at ~2-3× cost).
+
 ## Usage
 
 - **Process a folder of images**
   ```bash
   python main.py
+  ```
+
+- **YOLO backend, separate output for comparison**
+  ```bash
+  python main.py --backend yolo --output-dir output_yolo
   ```
 
 - **Process a video (extract frames then run pipeline)**

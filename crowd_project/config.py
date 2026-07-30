@@ -35,10 +35,28 @@ DATABASE_FILE: str = "crowd_analysis.db"
 DEVICE: str = os.environ.get("CROWD_DEVICE", "cpu")
 
 # =============================================================================
+# Detection backend
+# =============================================================================
+# "detectron2" — Phase I baseline: Faster R-CNN + Keypoint R-CNN + IoU tracker
+# "yolo"       — Phase II: YOLO11-pose + ByteTrack/BoT-SORT, single pass
+DETECTION_BACKEND: str = os.environ.get("CROWD_BACKEND", "detectron2")
+
+# =============================================================================
 # Models — Detectron2
 # =============================================================================
 DETECTOR_CONFIG: str = "COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"
 POSE_CONFIG: str = "COCO-Keypoints/keypoint_rcnn_R_50_FPN_3x.yaml"
+
+# =============================================================================
+# Models — YOLO (Ultralytics)
+# =============================================================================
+YOLO_WEIGHTS: str = os.environ.get("CROWD_YOLO_WEIGHTS", "yolo11n-pose.pt")
+YOLO_CONF: float = 0.3
+YOLO_IMGSZ: int = 640
+YOLO_TRACKER: str = "bytetrack"  # "bytetrack" | "botsort"
+# YOLO pose keypoint confidences are probabilities [0,1], unlike the
+# R-CNN visibility logits gated by KEYPOINT_VISIBILITY_THRESH
+YOLO_KEYPOINT_CONF: float = 0.5
 
 COCO_PERSON_CLASS_ID: int = 0
 

@@ -14,3 +14,8 @@ opencv-python==4.8.1.78
 matplotlib>=3.7.0
 tqdm>=4.65.0
 scipy>=1.10.0
+
+# Phase II — YOLO backend (optional; enables DETECTION_BACKEND=yolo)
+ultralytics>=8.4
+lapx>=0.5          # ByteTrack linear assignment
+onnxruntime>=1.17  # CPU export/inference path

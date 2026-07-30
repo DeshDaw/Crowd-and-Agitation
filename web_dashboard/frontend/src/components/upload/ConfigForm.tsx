@@ -9,9 +9,15 @@ interface ConfigFormProps {
   config: Partial<RunConfig>;
   onChange: (config: Partial<RunConfig>) => void;
   cudaAvailable: boolean;
+  backendsAvailable?: string[];
 }
 
-export const ConfigForm = ({ config, onChange, cudaAvailable }: ConfigFormProps) => {
+export const ConfigForm = ({
+  config,
+  onChange,
+  cudaAvailable,
+  backendsAvailable = ['detectron2'],
+}: ConfigFormProps) => {
   const handleChange = (key: keyof RunConfig, value: any) => {
     // Clearing a numeric input yields NaN, which would serialize to null and
     // make the backend reject the config — keep the previous value instead
@@ -25,6 +31,23 @@ export const ConfigForm = ({ config, onChange, cudaAvailable }: ConfigFormProps)
         <CardTitle>Processing Configuration</CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
+        {/* Backend Selection */}
+        <Select
+          label="Detection Backend"
+          value={config.detection_backend || 'detectron2'}
+          onChange={(e) => handleChange('detection_backend', e.target.value)}
+          options={[
+            {
+              value: 'detectron2',
+              label: `Detectron2 — Faster R-CNN + Keypoint R-CNN (Phase I baseline)${backendsAvailable.includes('detectron2') ? '' : ' (not installed)'}`,
+            },
+            {
+              value: 'yolo',
+              label: `YOLO11-pose + ByteTrack — single pass (Phase II)${backendsAvailable.includes('yolo') ? '' : ' (not installed)'}`,
+            },
+          ]}
+        />
+
         {/* Device Selection */}
         <Select
           label="Device"
@@ -32,8 +55,10 @@ export const ConfigForm = ({ config, onChange, cudaAvailable }: ConfigFormProps)
           onChange={(e) => handleChange('device', e.target.value)}
           options={[
             { value: 'cpu', label: 'CPU' },
-            { value: 'cuda', label: `CUDA ${cudaAvailable ? '(available)' : '(not available)'}`,
-          },
+            {
+              value: 'cuda',
+              label: `CUDA ${cudaAvailable ? '(available)' : '(not available)'}`,
+            },
           ]}
           disabled={!cudaAvailable}
         />
