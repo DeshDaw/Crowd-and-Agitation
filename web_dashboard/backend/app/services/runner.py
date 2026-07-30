@@ -287,7 +287,10 @@ def _process_run(context: RunContext) -> None:
         ]
         save_json(metrics_rows, output_dir / "metrics.json")
 
-        summary = build_summary(records, len(processor.event_manager.events))
+        summary = build_summary(
+            records, len(processor.event_manager.events),
+            extra={"state_classifier": getattr(processor, "state_classifier_name", None)},
+        )
         save_json(summary, output_dir / "summary.json")
 
         processor.event_manager.save_events_json(output_dir / "event_timeline.json")

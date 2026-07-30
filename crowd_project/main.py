@@ -47,8 +47,9 @@ from typing import Any
 import numpy as np
 from tqdm import tqdm
 
-from . import analytics, config
+from . import analytics, config, state_classifier
 from .agitation_analyzer import AgitationAnalyzer, AgitationMetrics
+from .behavior_metrics import BehaviorAnalyzer
 from .calibration import CameraCalibration
 from .database import CrowdDatabase
 from .density_analyzer import DensityAnalyzer, DensityMetrics
@@ -169,10 +170,17 @@ class FrameProcessor:
         self.event_manager = EventManager(output_dir=s.output_dir)
 
         # Optional metric ground-plane analysis (persons/m², LOS, speeds)
+        # plus the crowd-physics behavior layer built on the same calibration
         self.ground_analyzer: GroundMetricsAnalyzer | None = None
+        self.behavior_analyzer: BehaviorAnalyzer | None = None
         if s.calibration_file is not None:
             calib = CameraCalibration.load(Path(s.calibration_file))
             self.ground_analyzer = GroundMetricsAnalyzer(
+                calibration=calib,
+                source_fps=s.source_fps,
+                max_lost=s.tracker_max_lost,
+            )
+            self.behavior_analyzer = BehaviorAnalyzer(
                 calibration=calib,
                 source_fps=s.source_fps,
                 max_lost=s.tracker_max_lost,
@@ -258,6 +266,13 @@ class FrameProcessor:
             )
             sanity_check_speed(ground.mean_speed, ground.speed_unit)
 
+        # 8. Behavior physics (Helbing pressure, entropy, accelerations)
+        behavior = None
+        if self.behavior_analyzer is not None and ground is not None:
+            behavior = self.behavior_analyzer.analyze_frame(
+                active_tracks, frame_index, ground.persons_per_m2,
+            )
+
         # -- Build per-person rows for DB ----------------------------------
         motion_map: dict[int, float] = {
             m.track_id: m.normalized_motion for m in motions
@@ -319,6 +334,11 @@ class FrameProcessor:
             "mean_speed": ground.mean_speed if ground else None,
             "speed_std": ground.speed_std if ground else None,
             "speed_unit": ground.speed_unit if ground else None,
+            "crowd_pressure": behavior.crowd_pressure if behavior else None,
+            "velocity_variance": behavior.velocity_variance if behavior else None,
+            "directional_entropy": behavior.directional_entropy if behavior else None,
+            "accel_event_rate": behavior.accel_event_rate if behavior else None,
+            "crowd_state": None,               # set in batch post-processing
             "inference_time_det": round(det_time, 4),
             "inference_time_pose": round(pose_time, 4),
             "average_confidence": round(avg_conf, 4),
@@ -364,6 +384,15 @@ class FrameProcessor:
         for i, rec in enumerate(self._frame_records):
             rec["classification"] = self._density_list[i].classification
             rec["agitation_index"] = self._agitation_list[i].agitation_index
+
+        # Crowd state (Calm/Restless/Agitated): trained MLP when a checkpoint
+        # exists, heuristic bootstrap otherwise
+        states, clf_name = state_classifier.classify_batch(
+            self._frame_records, s.source_fps,
+        )
+        for rec, st in zip(self._frame_records, states):
+            rec["crowd_state"] = st
+        self.state_classifier_name = clf_name
 
         return mu_ag, std_ag, ag_threshold
 
@@ -487,6 +516,7 @@ def run_pipeline(
 
     summary = analytics.build_summary(
         records, len(processor.event_manager.events),
+        extra={"state_classifier": getattr(processor, "state_classifier_name", None)},
     )
     analytics.save_json(summary, s.output_dir / config.SUMMARY_JSON)
 

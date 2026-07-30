@@ -105,6 +105,28 @@ FRUIN_LOS_M2_PER_PERSON: list[tuple[str, float]] = [
 GROUND_SPEED_EMA_ALPHA: float = 0.5
 
 # =============================================================================
+# Behavior metrics (crowd physics, Helbing et al. 2007)
+# =============================================================================
+HEADING_ENTROPY_BINS: int = 12
+# Tracks slower than this contribute no heading (jitter, not motion).
+# Interpreted in the run's speed unit (m/s with fps, m/frame without).
+HEADING_MIN_SPEED: float = 0.1
+# |Δv| per second above which a velocity change counts as an acceleration event
+ACCEL_EVENT_THRESHOLD: float = 1.0
+
+# =============================================================================
+# Crowd state classifier (Calm / Restless / Agitated)
+# =============================================================================
+# Heuristic bootstrap thresholds as (mild, strong) pairs — deliberately
+# conservative defaults pending per-scene calibration or a trained model
+# (crowd_project/models/state_classifier.pt, auto-loaded when present).
+STATE_PRESSURE_THRESHOLDS: tuple[float, float] = (0.02, 0.10)
+STATE_ACCEL_THRESHOLDS: tuple[float, float] = (0.10, 0.30)
+STATE_AGITATION_THRESHOLDS: tuple[float, float] = (0.15, 0.35)
+# Directional entropy above this can push a borderline frame up one level
+STATE_ENTROPY_BOOST: float = 0.8
+
+# =============================================================================
 # Heatmap (retained for annotated density overlays)
 # =============================================================================
 HEATMAP_DOWNSCALE: int = 4

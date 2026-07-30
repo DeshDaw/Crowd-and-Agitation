@@ -49,6 +49,7 @@ def build_summary(
     frame_records: list[dict[str, Any]],
     events_count: int,
     window: int = config.MOVING_AVERAGE_WINDOW,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Compute batch summary from per-frame records.
@@ -115,9 +116,31 @@ def build_summary(
             ),
         }
 
+    # Crowd state distribution (always present after batch classification)
+    state_summary: dict[str, Any] = {}
+    state_dist: dict[str, int] = {}
+    for r in frame_records:
+        st = r.get("crowd_state")
+        if st:
+            state_dist[st] = state_dist.get(st, 0) + 1
+    if state_dist:
+        state_summary = {
+            "crowd_state_distribution": state_dist,
+            "dominant_state": max(state_dist, key=lambda k: state_dist[k]),
+        }
+        pressures = [
+            r["crowd_pressure"] for r in frame_records
+            if r.get("crowd_pressure") is not None
+        ]
+        if pressures:
+            state_summary["mean_crowd_pressure"] = round(float(np.mean(pressures)), 6)
+            state_summary["peak_crowd_pressure"] = round(float(np.max(pressures)), 6)
+
     return {
         "total_frames": len(frame_records),
         **ground_summary,
+        **state_summary,
+        **(extra or {}),
         "mean_density": round(float(np.mean(densities)), 6),
         "peak_density_frame": names[peak_density_idx],
         "peak_density_value": round(densities[peak_density_idx], 6),
