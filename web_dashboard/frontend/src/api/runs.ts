@@ -142,6 +142,22 @@ export const runsApi = {
     return `/api/runs/${runId}/artifacts/${artifact}`;
   },
 
+  // Calibration
+  saveCalibration: async (
+    runId: string,
+    data: { image_points: number[][]; width_m: number; height_m: number; image_size: number[] }
+  ): Promise<{ run_id: string; saved: boolean; area_m2: number }> => {
+    const response = await apiClient.post(`/runs/${runId}/calibration`, data);
+    return response.data;
+  },
+
+  getCalibration: async (
+    runId: string
+  ): Promise<{ image_points: number[][]; width_m: number; height_m: number; image_size: number[] }> => {
+    const response = await apiClient.get(`/runs/${runId}/calibration`);
+    return response.data;
+  },
+
   // List frames
   listAnnotated: async (runId: string): Promise<string[]> => {
     const response = await apiClient.get<string[]>(`/runs/${runId}/artifacts/annotated`);

@@ -84,6 +84,16 @@ class CrowdDatabase:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_keypoints_frame ON keypoints(frame_id)"
         )
+        # Additive migrations for ground metrics (Stage 3) — existing DBs
+        # keep working; duplicate-column errors mean already migrated.
+        for ddl in (
+            "ALTER TABLE frames ADD COLUMN persons_per_m2 REAL",
+            "ALTER TABLE frames ADD COLUMN los_class TEXT",
+        ):
+            try:
+                cur.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -96,13 +106,17 @@ class CrowdDatabase:
         density_ratio: float,
         agitation_index: float,
         classification: str,
+        persons_per_m2: float | None = None,
+        los_class: str | None = None,
     ) -> None:
         """Upsert a frame row."""
         self._conn.execute(
             """INSERT OR REPLACE INTO frames
-               (frame_id, people_count, density_ratio, agitation_index, classification)
-               VALUES (?, ?, ?, ?, ?)""",
-            (frame_id, people_count, density_ratio, agitation_index, classification),
+               (frame_id, people_count, density_ratio, agitation_index,
+                classification, persons_per_m2, los_class)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (frame_id, people_count, density_ratio, agitation_index,
+             classification, persons_per_m2, los_class),
         )
 
     def insert_persons(

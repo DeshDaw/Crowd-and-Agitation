@@ -60,6 +60,11 @@ class PipelineSettings:
     heatmap_colormap: int = config.HEATMAP_COLORMAP
     heatmap_alpha: float = config.HEATMAP_ALPHA
 
+    # Ground metrics (optional; enables persons/m², Fruin LOS, m/s speeds)
+    calibration_file: Path | None = None
+    source_fps: float | None = None      # frame rate of the source; speeds
+                                         # are m/frame when unknown
+
     # Output
     output_dir: Path = field(default_factory=lambda: config.OUTPUT_DIR)
     save_annotated: bool = True
@@ -87,4 +92,6 @@ class PipelineSettings:
         }
         if "output_dir" in kwargs:
             kwargs["output_dir"] = Path(kwargs["output_dir"])
+        if "calibration_file" in kwargs:
+            kwargs["calibration_file"] = Path(kwargs["calibration_file"])
         return cls(**kwargs)

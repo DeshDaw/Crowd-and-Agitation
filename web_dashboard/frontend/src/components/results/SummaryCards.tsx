@@ -1,7 +1,7 @@
 /**
  * Summary statistics cards
  */
-import { Users, Gauge, AlertTriangle, Activity } from 'lucide-react';
+import { Users, Gauge, AlertTriangle, Activity, Ruler } from 'lucide-react';
 import { Card } from '../ui/Card';
 import type { SummaryStats } from '../../types/api';
 
@@ -55,6 +55,18 @@ export const SummaryCards = ({ summary }: SummaryCardsProps) => {
       color: events > 0 ? 'text-red-600' : 'text-green-600',
     },
   ];
+
+  // Calibrated runs get a metric-density card (Fruin Level of Service)
+  if (summary.mean_persons_per_m2 != null) {
+    const worst = summary.worst_los ?? '—';
+    cards.push({
+      icon: Ruler,
+      label: 'Ground Density',
+      value: `${summary.mean_persons_per_m2.toFixed(2)} p/m²`,
+      subtext: `worst LOS: ${worst}${summary.mean_speed != null ? ` · ${summary.mean_speed.toFixed(2)} ${summary.speed_unit ?? ''}` : ''}`,
+      color: worst <= 'C' ? 'text-green-600' : worst <= 'D' ? 'text-orange-600' : 'text-red-600',
+    });
+  }
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

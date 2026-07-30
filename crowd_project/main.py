@@ -49,17 +49,19 @@ from tqdm import tqdm
 
 from . import analytics, config
 from .agitation_analyzer import AgitationAnalyzer, AgitationMetrics
+from .calibration import CameraCalibration
 from .database import CrowdDatabase
 from .density_analyzer import DensityAnalyzer, DensityMetrics
 from .detection_engine import Detection, DetectionEngine
 from .event_manager import EventManager
+from .ground_metrics import GroundMetricsAnalyzer, sanity_check_speed
 from .heatmap import generate_heatmap_visualization
 from .model_registry import ModelRegistry
 from .motion_analyzer import MotionAnalyzer
 from .pose_engine import PoseEngine
 from .settings import PipelineSettings
 from .tracker import IoUTracker
-from .video_utils import extract_frames_from_video, get_image_paths, load_image
+from .video_utils import extract_frames_from_video, get_image_paths, get_video_fps, load_image
 
 import cv2
 
@@ -166,6 +168,20 @@ class FrameProcessor:
         )
         self.event_manager = EventManager(output_dir=s.output_dir)
 
+        # Optional metric ground-plane analysis (persons/m², LOS, speeds)
+        self.ground_analyzer: GroundMetricsAnalyzer | None = None
+        if s.calibration_file is not None:
+            calib = CameraCalibration.load(Path(s.calibration_file))
+            self.ground_analyzer = GroundMetricsAnalyzer(
+                calibration=calib,
+                source_fps=s.source_fps,
+                max_lost=s.tracker_max_lost,
+            )
+            logger.info(
+                "Ground metrics enabled: %.1f x %.1f m region, speeds in %s",
+                calib.width_m, calib.height_m, self.ground_analyzer.speed_unit,
+            )
+
         if s.save_annotated:
             s.annotated_dir.mkdir(parents=True, exist_ok=True)
         if s.save_heatmaps:
@@ -234,6 +250,14 @@ class FrameProcessor:
         self._agitation_list.append(agitation)
         self._prev_density = density.density_ratio
 
+        # 7. Ground metrics (optional, calibration-based)
+        ground = None
+        if self.ground_analyzer is not None:
+            ground = self.ground_analyzer.analyze_frame(
+                detections, active_tracks, frame_index,
+            )
+            sanity_check_speed(ground.mean_speed, ground.speed_unit)
+
         # -- Build per-person rows for DB ----------------------------------
         motion_map: dict[int, float] = {
             m.track_id: m.normalized_motion for m in motions
@@ -288,6 +312,13 @@ class FrameProcessor:
             "frame_index": frame_index,
             "people_count": len(detections),
             "head_count": head_count,
+            "persons_in_region": ground.persons_in_region if ground else None,
+            "persons_per_m2": ground.persons_per_m2 if ground else None,
+            "space_per_person": ground.space_per_person if ground else None,
+            "los_class": ground.los_class if ground else None,
+            "mean_speed": ground.mean_speed if ground else None,
+            "speed_std": ground.speed_std if ground else None,
+            "speed_unit": ground.speed_unit if ground else None,
             "inference_time_det": round(det_time, 4),
             "inference_time_pose": round(pose_time, 4),
             "average_confidence": round(avg_conf, 4),
@@ -438,6 +469,8 @@ def run_pipeline(
             density_ratio=rec["density_ratio"],
             agitation_index=rec["agitation_index"],
             classification=rec["classification"],
+            persons_per_m2=rec.get("persons_per_m2"),
+            los_class=rec.get("los_class"),
         )
         db.insert_persons(rec["frame_name"], rec["person_rows"])
     db.commit()
@@ -548,9 +581,20 @@ def main() -> None:
         "--output-dir", type=Path, default=None,
         help="Output directory (default: crowd_project/output).",
     )
+    parser.add_argument(
+        "--calibration", type=Path, default=None,
+        help="calibration.json from crowd_project.calibration — enables "
+             "persons/m², Fruin LOS and metric speeds.",
+    )
+    parser.add_argument(
+        "--fps", type=float, default=None,
+        help="Source frame rate for m/s speeds (auto-detected for --video).",
+    )
     args = parser.parse_args()
 
     input_dir: Path = args.input_dir or config.INPUT_IMAGES_DIR
+
+    settings = PipelineSettings()
 
     if args.video is not None:
         if not args.video.is_file():
@@ -559,14 +603,19 @@ def main() -> None:
         frames_dir = config.INPUT_IMAGES_DIR / f"extracted_{args.video.stem}"
         extract_frames_from_video(args.video, frames_dir, fps=config.VIDEO_EXTRACT_FPS)
         input_dir = frames_dir
+        # Frames now flow at the extraction rate (or native rate)
+        settings.source_fps = config.VIDEO_EXTRACT_FPS or get_video_fps(args.video)
 
-    settings = PipelineSettings()
     if args.device:
         settings.device = args.device.lower()
     if args.backend:
         settings.detection_backend = args.backend.lower()
     if args.output_dir:
         settings.output_dir = args.output_dir
+    if args.calibration:
+        settings.calibration_file = args.calibration
+    if args.fps:
+        settings.source_fps = args.fps
 
     logger.info("Backend: %s", settings.detection_backend)
     logger.info("Device : %s", settings.device)

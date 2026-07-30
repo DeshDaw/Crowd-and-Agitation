@@ -87,8 +87,37 @@ def build_summary(
     for c in classifications:
         class_dist[c] = class_dist.get(c, 0) + 1
 
+    # Ground metrics (present only for calibrated runs)
+    ground_summary: dict[str, Any] = {}
+    m2_vals = [
+        r["persons_per_m2"] for r in frame_records
+        if r.get("persons_per_m2") is not None
+    ]
+    if m2_vals:
+        los_dist: dict[str, int] = {}
+        for r in frame_records:
+            los = r.get("los_class")
+            if los:
+                los_dist[los] = los_dist.get(los, 0) + 1
+        speeds = [
+            r["mean_speed"] for r in frame_records
+            if r.get("mean_speed") is not None
+        ]
+        ground_summary = {
+            "mean_persons_per_m2": round(float(np.mean(m2_vals)), 4),
+            "peak_persons_per_m2": round(float(np.max(m2_vals)), 4),
+            "los_distribution": dict(sorted(los_dist.items())),
+            "worst_los": max(los_dist) if los_dist else None,
+            "mean_speed": round(float(np.mean(speeds)), 4) if speeds else None,
+            "speed_unit": next(
+                (r["speed_unit"] for r in frame_records if r.get("speed_unit")),
+                None,
+            ),
+        }
+
     return {
         "total_frames": len(frame_records),
+        **ground_summary,
         "mean_density": round(float(np.mean(densities)), 6),
         "peak_density_frame": names[peak_density_idx],
         "peak_density_value": round(densities[peak_density_idx], 6),

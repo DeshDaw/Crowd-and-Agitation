@@ -52,6 +52,26 @@ class RunConfig(BaseModel):
     video_file: Optional[str] = Field(
         default=None, description="Uploaded video filename, if this is a video run"
     )
+    source_fps: Optional[float] = Field(
+        default=None, ge=0.1, le=240.0,
+        description="Frame rate of the source frames (for m/s speeds); "
+        "auto-detected for video runs",
+    )
+
+
+class CalibrationData(BaseModel):
+    """Homography calibration: 4 image points + real-world rectangle size."""
+
+    image_points: list[list[float]] = Field(
+        min_length=4, max_length=4,
+        description="4 pixel points (TL, TR, BR, BL) of a known ground rectangle",
+    )
+    width_m: float = Field(gt=0, le=1000)
+    height_m: float = Field(gt=0, le=1000)
+    image_size: list[int] = Field(
+        default_factory=lambda: [0, 0],
+        description="[width, height] of the frame the points were clicked on",
+    )
 
 
 class RunCreateResponse(BaseModel):

@@ -8,6 +8,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card'
 import { Button } from '../components/ui/Button';
 import { FileUploader } from '../components/upload/FileUploader';
 import { ConfigForm } from '../components/upload/ConfigForm';
+import { CalibrationEditor } from '../components/upload/CalibrationEditor';
 import { useRun } from '../hooks/useRun';
 import { useRunsStore } from '../store/runsStore';
 import { runsApi } from '../api/runs';
@@ -164,6 +165,8 @@ export const RunCreate = () => {
 
         {step === 'config' && (
           <div className="space-y-6">
+            {runId && <CalibrationEditor runId={runId} />}
+
             <ConfigForm
               config={config}
               onChange={setConfig}

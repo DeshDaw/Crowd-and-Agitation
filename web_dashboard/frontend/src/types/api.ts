@@ -113,6 +113,13 @@ export interface FrameMetrics {
   frame_index: number;
   people_count: number;
   head_count?: number | null;
+  persons_in_region?: number | null;
+  persons_per_m2?: number | null;
+  space_per_person?: number | null;
+  los_class?: string | null;
+  mean_speed?: number | null;
+  speed_std?: number | null;
+  speed_unit?: string | null;
   inference_time_det: number;
   inference_time_pose: number;
   average_confidence: number;
@@ -123,6 +130,13 @@ export interface FrameMetrics {
 
 export interface SummaryStats {
   total_frames: number;
+  // Ground metrics — present only for calibrated runs
+  mean_persons_per_m2?: number;
+  peak_persons_per_m2?: number;
+  los_distribution?: Record<string, number>;
+  worst_los?: string | null;
+  mean_speed?: number | null;
+  speed_unit?: string | null;
   mean_density: number;
   peak_density_frame: string;
   peak_density_value: number;

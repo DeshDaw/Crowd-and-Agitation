@@ -104,6 +104,7 @@ def list_run_ids() -> list[str]:
 # per-run lock so concurrent writers cannot drop keys or expose torn files.
 
 STATUS_FILENAME = "status.json"
+CALIBRATION_FILENAME = "calibration.json"
 
 _status_locks: dict[str, threading.Lock] = {}
 _status_locks_guard = threading.Lock()

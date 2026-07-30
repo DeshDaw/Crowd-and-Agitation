@@ -40,6 +40,14 @@ export const MetricsTable = ({ metrics, eventFrameNames }: MetricsTableProps) =>
     () => metrics.some((m) => m.head_count != null),
     [metrics]
   );
+  // ground metrics exist only for calibrated runs
+  const hasGround = useMemo(
+    () => metrics.some((m) => m.persons_per_m2 != null),
+    [metrics]
+  );
+
+  const losBadgeVariant = (los: string) =>
+    los <= 'B' ? 'success' : los <= 'D' ? 'warning' : 'error';
 
   // Paginate (min 1 page so an empty filter result can't drive page to 0)
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -115,6 +123,12 @@ export const MetricsTable = ({ metrics, eventFrameNames }: MetricsTableProps) =>
                 {hasHeadCounts && (
                   <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Heads</th>
                 )}
+                {hasGround && (
+                  <>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">p/m²</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">LOS</th>
+                  </>
+                )}
                 <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Density</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Agitation</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Classification</th>
@@ -136,6 +150,20 @@ export const MetricsTable = ({ metrics, eventFrameNames }: MetricsTableProps) =>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
                       {m.head_count ?? '—'}
                     </td>
+                  )}
+                  {hasGround && (
+                    <>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
+                        {m.persons_per_m2 != null ? m.persons_per_m2.toFixed(2) : '—'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {m.los_class ? (
+                          <Badge variant={losBadgeVariant(m.los_class)}>{m.los_class}</Badge>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                    </>
                   )}
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
                     {m.density_ratio.toFixed(3)}×

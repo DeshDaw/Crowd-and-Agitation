@@ -88,6 +88,23 @@ DENSITY_HIGH_MIN_RATIO: float = 0.25
 DENSITY_LOW_MAX_RATIO: float = 0.05
 
 # =============================================================================
+# Ground metrics (homography calibration)
+# =============================================================================
+# Fruin Level of Service thresholds, space per person in m²/p
+# (Fruin, Pedestrian Planning & Design, 1971 — queueing/waiting areas).
+# Class = first entry whose minimum space the frame meets; below all = F.
+FRUIN_LOS_M2_PER_PERSON: list[tuple[str, float]] = [
+    ("A", 1.2),
+    ("B", 0.9),
+    ("C", 0.7),
+    ("D", 0.5),
+    ("E", 0.2),
+]
+
+# EMA smoothing factor for per-track ground speed (1.0 = no smoothing)
+GROUND_SPEED_EMA_ALPHA: float = 0.5
+
+# =============================================================================
 # Heatmap (retained for annotated density overlays)
 # =============================================================================
 HEATMAP_DOWNSCALE: int = 4

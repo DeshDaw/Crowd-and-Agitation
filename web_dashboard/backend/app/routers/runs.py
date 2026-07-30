@@ -15,6 +15,7 @@ from fastapi import Path as PathParam
 from pydantic import ValidationError
 
 from ..models import (
+    CalibrationData,
     EventTimelineResponse,
     FileListResponse,
     ProgressInfo,
@@ -33,10 +34,12 @@ from ..services.runner import (
     start_run,
 )
 from ..services.storage import (
+    CALIBRATION_FILENAME,
     RUN_ID_PATTERN,
     discover_output_files,
     get_artifact_path,
     get_run_dir,
+    get_run_input_dir,
     list_run_ids,
     load_status,
     update_status,
@@ -204,6 +207,105 @@ async def upload_files(
         "total_files": len(uploaded),
         "message": f"Successfully uploaded {len(uploaded)} file(s)",
     }
+
+
+@router.post("/{run_id}/calibration")
+async def save_calibration(run_id: RunID, calibration: CalibrationData) -> dict:
+    """
+    Save a homography calibration for a run — enables persons/m², Fruin LOS
+    and metric speeds when processing starts. Validated through the pipeline's
+    own CameraCalibration (rejects degenerate point sets).
+    """
+    run_dir = get_run_dir(run_id)
+    if not run_dir.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Run {run_id} not found",
+        )
+
+    from crowd_project.calibration import CameraCalibration
+
+    calib = CameraCalibration(
+        image_points=calibration.image_points,
+        width_m=calibration.width_m,
+        height_m=calibration.height_m,
+        image_size=calibration.image_size,
+    )
+    try:
+        calib.save(run_dir / CALIBRATION_FILENAME)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        )
+
+    return {
+        "run_id": run_id,
+        "saved": True,
+        "area_m2": round(calib.area_m2, 2),
+        "message": f"Calibration saved ({calib.width_m} × {calib.height_m} m)",
+    }
+
+
+@router.get("/{run_id}/calibration")
+async def get_calibration(run_id: RunID) -> dict:
+    """Return the run's saved calibration, or 404 if none."""
+    path = get_run_dir(run_id) / CALIBRATION_FILENAME
+    if not path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No calibration saved for this run",
+        )
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@router.get("/{run_id}/input-preview")
+async def input_preview(run_id: RunID):
+    """
+    First input frame of the run, for the calibration editor. For image
+    uploads: the first image. For video uploads: the first video frame,
+    decoded on demand.
+    """
+    from fastapi.responses import FileResponse, Response
+
+    input_dir = get_run_input_dir(run_id)
+    if not input_dir.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Run {run_id} has no input",
+        )
+
+    image_exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+    video_exts = {".mp4", ".avi", ".mov", ".mkv"}
+    images = sorted(
+        p for p in input_dir.iterdir()
+        if p.is_file() and p.suffix.lower() in image_exts
+    )
+    if images:
+        return FileResponse(images[0])
+
+    videos = [
+        p for p in input_dir.iterdir()
+        if p.is_file() and p.suffix.lower() in video_exts
+    ]
+    if videos:
+        import cv2
+
+        cap = cv2.VideoCapture(str(videos[0]))
+        try:
+            ok, frame = cap.read()
+        finally:
+            cap.release()
+        if ok:
+            ok, buf = cv2.imencode(".jpg", frame)
+            if ok:
+                return Response(content=buf.tobytes(), media_type="image/jpeg")
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="No previewable input found (upload files first)",
+    )
 
 
 @router.post("/{run_id}/start", response_model=dict)

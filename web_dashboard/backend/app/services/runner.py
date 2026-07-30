@@ -43,11 +43,18 @@ from crowd_project.analytics import (
 from crowd_project.database import CrowdDatabase
 from crowd_project.main import FrameProcessor
 from crowd_project.settings import PipelineSettings
-from crowd_project.video_utils import extract_frames_from_video, get_image_paths, load_image
+from crowd_project.video_utils import (
+    extract_frames_from_video,
+    get_image_paths,
+    get_video_fps,
+    load_image,
+)
 
 from .storage import (
+    CALIBRATION_FILENAME,
     create_run_workspace,
     delete_run_workspace,
+    get_run_dir,
     get_run_input_dir,
     get_run_output_dir,
     load_status,
@@ -156,6 +163,7 @@ def _process_run(context: RunContext) -> None:
         output_dir = get_run_output_dir(run_id)
 
         # Handle video extraction if needed
+        source_fps: float | None = run_config.get("source_fps")
         video_file = run_config.get("video_file")
         if video_file:
             _update_progress(run_id, {
@@ -167,6 +175,9 @@ def _process_run(context: RunContext) -> None:
             frames_dir = input_dir / f"extracted_{video_path.stem}"
             extract_frames_from_video(video_path, frames_dir, fps=fps)
             input_dir = frames_dir
+            # Frames flow at the extraction rate (or the video's native rate)
+            if source_fps is None:
+                source_fps = fps or get_video_fps(video_path)
 
         # Get image paths
         image_paths = get_image_paths(input_dir)
@@ -180,6 +191,14 @@ def _process_run(context: RunContext) -> None:
         )
 
         settings = _settings_for_run(run_config, output_dir)
+        settings.source_fps = source_fps
+
+        # Pick up a calibration saved via POST /runs/{id}/calibration
+        calib_path = get_run_dir(run_id) / CALIBRATION_FILENAME
+        if calib_path.is_file():
+            settings.calibration_file = calib_path
+            _update_progress(run_id, {"message": "Calibration active — metric density enabled"})
+
         processor = FrameProcessor(settings=settings)
 
         # Create database if needed
@@ -244,6 +263,8 @@ def _process_run(context: RunContext) -> None:
                     density_ratio=rec["density_ratio"],
                     agitation_index=rec["agitation_index"],
                     classification=rec["classification"],
+                    persons_per_m2=rec.get("persons_per_m2"),
+                    los_class=rec.get("los_class"),
                 )
                 db.insert_persons(rec["frame_name"], rec.get("person_rows", []))
             db.commit()

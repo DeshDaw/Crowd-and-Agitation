@@ -56,3 +56,4 @@ prompt.txt
 *.onnx
 crowd_project/models/
 crowd_project/output_yolo/
+crowd_project/output_calib_test/

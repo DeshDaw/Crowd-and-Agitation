@@ -89,6 +89,16 @@ def iter_images_from_folder(
             yield path, img
 
 
+def get_video_fps(video_path: Path) -> float | None:
+    """Native frame rate of a video, or None if unreadable/unreported."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return None
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+    return float(fps) if fps and fps > 0 else None
+
+
 def extract_frames_from_video(
     video_path: Path,
     output_frames_dir: Path,
