@@ -14,6 +14,7 @@ export type RunState =
 export interface RunConfig {
   device: string;
   detection_backend: 'detectron2' | 'yolo';
+  yolo_weights?: string;
   confidence_threshold: number;
   pose_confidence_threshold: number;
   max_inference_width: number;
@@ -111,6 +112,7 @@ export interface FrameMetrics {
   frame_name: string;
   frame_index: number;
   people_count: number;
+  head_count?: number | null;
   inference_time_det: number;
   inference_time_pose: number;
   average_confidence: number;

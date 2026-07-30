@@ -30,6 +30,12 @@ class RunConfig(BaseModel):
         pattern="^(detectron2|yolo)$",
         description="Detection backend: detectron2 (Phase I baseline) or yolo (Phase II)",
     )
+    yolo_weights: str = Field(
+        default="yolo11n-pose.pt",
+        pattern=r"^[\w][\w.\-]*\.pt$",
+        description="YOLO weights filename (resolved from crowd_project/models/); "
+        "e.g. crowdhuman_yolo11s.pt for the fine-tuned head+body detector",
+    )
     confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     pose_confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     max_inference_width: int = Field(default=960, ge=320, le=2048)

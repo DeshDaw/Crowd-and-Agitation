@@ -203,11 +203,12 @@ class FrameProcessor:
 
         if self.backend == "yolo":
             # 1-3. Detection + tracking + pose in a single pass
-            detections, active_tracks, det_time = self.yolo_engine.process(
-                image, frame_index,
+            detections, active_tracks, det_time, head_count = (
+                self.yolo_engine.process(image, frame_index)
             )
             pose_time = 0.0
         else:
+            head_count = None
             # 1. Detection
             detections, det_time = self.detection_engine.detect(image, resize=True)
 
@@ -286,6 +287,7 @@ class FrameProcessor:
             "frame_name": frame_name,
             "frame_index": frame_index,
             "people_count": len(detections),
+            "head_count": head_count,
             "inference_time_det": round(det_time, 4),
             "inference_time_pose": round(pose_time, 4),
             "average_confidence": round(avg_conf, 4),

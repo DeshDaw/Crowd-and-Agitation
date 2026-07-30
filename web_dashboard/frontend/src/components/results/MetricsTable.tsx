@@ -35,6 +35,12 @@ export const MetricsTable = ({ metrics, eventFrameNames }: MetricsTableProps) =>
     });
   }, [metrics, search, classificationFilter, minPeople, maxPeople, onlyEvents, eventFrameNames]);
 
+  // head_count exists only for CrowdHuman-fine-tuned YOLO runs
+  const hasHeadCounts = useMemo(
+    () => metrics.some((m) => m.head_count != null),
+    [metrics]
+  );
+
   // Paginate (min 1 page so an empty filter result can't drive page to 0)
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const safePage = Math.min(page, totalPages);
@@ -106,6 +112,9 @@ export const MetricsTable = ({ metrics, eventFrameNames }: MetricsTableProps) =>
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Frame</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">People</th>
+                {hasHeadCounts && (
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Heads</th>
+                )}
                 <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Density</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Agitation</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Classification</th>
@@ -123,6 +132,11 @@ export const MetricsTable = ({ metrics, eventFrameNames }: MetricsTableProps) =>
                     )}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">{m.people_count}</td>
+                  {hasHeadCounts && (
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
+                      {m.head_count ?? '—'}
+                    </td>
+                  )}
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">
                     {m.density_ratio.toFixed(3)}×
                   </td>

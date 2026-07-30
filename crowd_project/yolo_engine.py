@@ -103,6 +103,31 @@ class YoloEngine:
             self._weights, device, self._imgsz, self._tracker_cfg,
         )
         self._model = YOLO(self._weights)
+
+        # CrowdHuman-fine-tuned weights carry a "head" class: heads survive
+        # occlusion that hides bodies, so head count is the robust count
+        # signal in dense scenes. Auto-detected from the model's own names.
+        names: dict[int, str] = {}
+        for k, v in self._model.names.items():
+            try:
+                names[int(k)] = str(v)
+            except (TypeError, ValueError):
+                continue  # tolerate exotic custom-model name keys
+        self._person_class = next(
+            (i for i, n in names.items() if n == "person"), 0,
+        )
+        self._head_class = next(
+            (i for i, n in names.items() if n == "head"), None,
+        )
+        self._classes = (
+            [self._person_class]
+            if self._head_class is None
+            else [self._person_class, self._head_class]
+        )
+        if self._head_class is not None:
+            logger.info("Head class detected (id=%d) — head_count enabled",
+                        self._head_class)
+
         self._tracks: dict[int, Track] = {}
         self._last_seen: dict[int, int] = {}
 
@@ -114,12 +139,17 @@ class YoloEngine:
         self,
         image: np.ndarray,
         frame_index: int,
-    ) -> tuple[list[Detection], list[Track], float]:
+    ) -> tuple[list[Detection], list[Track], float, int | None]:
         """
         Run one tracked inference pass on a BGR frame.
 
         Returns:
-            (detections, tracks_matched_this_frame, inference_time_seconds)
+            (person_detections, tracks_matched_this_frame,
+             inference_time_seconds, head_count_or_None)
+
+        head_count is only present with CrowdHuman-fine-tuned weights;
+        person boxes drive detections/tracks/density, head boxes only the
+        count.
         """
         t0 = time.perf_counter()
         results = self._model.track(
@@ -128,7 +158,7 @@ class YoloEngine:
             conf=self._conf,
             imgsz=self._imgsz,
             tracker=self._tracker_cfg,
-            classes=[0],
+            classes=self._classes,
             device=self._device,
             verbose=False,
         )
@@ -137,12 +167,14 @@ class YoloEngine:
         r = results[0]
         detections: list[Detection] = []
         matched: list[Track] = []
+        head_count = 0 if self._head_class is not None else None
 
         boxes = r.boxes
         n = len(boxes) if boxes is not None else 0
         if n:
             xyxy = boxes.xyxy.cpu().numpy().astype(np.float32)
             confs = boxes.conf.cpu().numpy()
+            clss = boxes.cls.cpu().numpy().astype(int)
             ids = (
                 boxes.id.cpu().numpy().astype(int)
                 if boxes.id is not None else [None] * n
@@ -159,6 +191,12 @@ class YoloEngine:
                 )
 
             for i in range(n):
+                if self._head_class is not None and clss[i] == self._head_class:
+                    head_count += 1
+                    continue
+                if clss[i] != self._person_class:
+                    continue
+
                 b = xyxy[i]
                 cx = float((b[0] + b[2]) / 2)
                 cy = float((b[1] + b[3]) / 2)
@@ -199,7 +237,7 @@ class YoloEngine:
                 matched.append(trk)
 
         self._prune(frame_index)
-        return detections, matched, inference_time
+        return detections, matched, inference_time, head_count
 
     def _prune(self, frame_index: int) -> None:
         stale = [

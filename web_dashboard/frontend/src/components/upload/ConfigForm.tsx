@@ -48,6 +48,16 @@ export const ConfigForm = ({
           ]}
         />
 
+        {/* YOLO weights (only relevant for the yolo backend) */}
+        {(config.detection_backend || 'detectron2') === 'yolo' && (
+          <Input
+            label="YOLO Weights"
+            value={config.yolo_weights ?? 'yolo11n-pose.pt'}
+            onChange={(e) => handleChange('yolo_weights', e.target.value)}
+            helperText="Filename in crowd_project/models/ — yolo11n-pose.pt (pose+motion), yolo11s-pose.pt (better counts), or a CrowdHuman fine-tune like crowdhuman_yolo11s.pt (adds head_count)"
+          />
+        )}
+
         {/* Device Selection */}
         <Select
           label="Device"
